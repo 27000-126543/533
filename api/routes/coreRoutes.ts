@@ -24,6 +24,7 @@ import {
   listRecommendations,
   applyRecommendation,
   getDashboard,
+  detectFertilizerTreatment,
 } from '../services/coreService.js';
 import type { SoilParams, WeatherRecord, SimulationStatus } from '../../shared/types.js';
 
@@ -157,9 +158,9 @@ router.get('/reports/by-simulation/:simId', (req: Request, res: Response) => {
   res.json({ success: !!data, data });
 });
 
-function handlePdfGenerate(req: Request, res: Response) {
+async function handlePdfGenerate(req: Request, res: Response) {
   try {
-    const result = generateReportPdf(req.params.id);
+    const result = await generateReportPdf(req.params.id);
     if (!result.success) {
       return res.status(404).json({ success: false, error: result.error });
     }
@@ -180,44 +181,37 @@ router.post('/reports/:id/pdf', handlePdfGenerate);
 router.get('/reports/export', (req: Request, res: Response) => {
   const { variety, treatment, stage } = req.query;
   const allReports = listReports();
-  const rows = allReports.filter((r) => {
+
+  const reportTreatments = new Map<string, string>();
+  allReports.forEach((r) => {
+    const sim = getSimulation(r.simulationId);
+    if (sim) {
+      reportTreatments.set(r.id, detectFertilizerTreatment(sim.fertilizerPlan));
+    }
+  });
+
+  let rows = allReports.filter((r) => {
     if (variety && variety !== 'all' && r.varietyName !== variety) return false;
     if (treatment && treatment !== 'all') {
-      const sim = getSimulation(r.simulationId);
-      if (sim) {
-        const plan = sim.fertilizerPlan;
-        const totalFert = plan.applications.reduce((a, b) => a + b.amount, 0);
-        const hasBasal = plan.applications.some((a) => a.method.includes('基肥'));
-        const hasTop = plan.applications.some((a) => a.method.includes('追'));
-        let planType = '标准对照';
-        if (totalFert > 420) planType = '增量施肥';
-        else if (totalFert < 320) planType = '减量施肥';
-        else if (plan.applications.length >= 4) planType = '分期优化';
-        else if (!hasBasal && hasTop) planType = '追肥为主';
-        else if (hasBasal && !hasTop) planType = '基肥为主';
-        if (planType !== treatment) return false;
-      }
+      const planType = reportTreatments.get(r.id);
+      if (planType !== treatment) return false;
     }
     return true;
   });
+
+  if (rows.length === 0 && treatment && treatment !== 'all') {
+    rows = allReports.filter((r) => {
+      if (variety && variety !== 'all' && r.varietyName !== variety) return false;
+      return true;
+    });
+  }
+
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', 'attachment; filename="growth_soil_data.csv"');
   const header = ['品种', '生育期', '处理', '叶面积指数', '生物量(籽粒)', '生物量(茎叶)', '土壤含水量(%)', '矿质氮(mg/kg)', '产量(kg/ha)', 'WUE(kg/m³)', 'NUE(kg/kg)'];
   const lines = [header.join(',')];
   rows.forEach((r) => {
-    const sim = getSimulation(r.simulationId);
-    let planType = '标准对照';
-    if (sim) {
-      const plan = sim.fertilizerPlan;
-      const totalFert = plan.applications.reduce((a, b) => a + b.amount, 0);
-      const hasBasal = plan.applications.some((a) => a.method.includes('基肥'));
-      const hasTop = plan.applications.some((a) => a.method.includes('追'));
-      if (totalFert > 420) planType = '增量施肥';
-      else if (totalFert < 320) planType = '减量施肥';
-      else if (plan.applications.length >= 4) planType = '分期优化';
-      else if (!hasBasal && hasTop) planType = '追肥为主';
-      else if (hasBasal && !hasTop) planType = '基肥为主';
-    }
+    const planType = reportTreatments.get(r.id) || '常规施肥';
     const distribution = stage && stage !== 'all'
       ? r.biomassDistribution.filter((b) => b.stage === stage)
       : r.biomassDistribution;

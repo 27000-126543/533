@@ -34,7 +34,7 @@ import {
   Pie,
   Cell,
 } from 'recharts';
-import type { Report, Variety, DataPoint, BiomassDataPoint, NitrogenBalance, CarbonFootprint } from '@@/shared/types';
+import type { Report, Variety, DataPoint, BiomassDataPoint, NitrogenBalance, CarbonFootprint, SimulationTask, FertilizerPlan } from '@@/shared/types';
 import { formatNumber, formatDate } from '@/utils/format';
 import useAppStore from '@/store/appStore';
 
@@ -82,7 +82,7 @@ const MOCK_CARBON_FOOTPRINT: CarbonFootprint = {
 };
 
 const FERTILIZER_TREATMENTS = ['常规施肥', '优化施肥', '有机替代', '减氮20%', '控释肥'];
-const GROWTH_STAGES = ['全生育期', '苗期', '拔节期', '抽穗期', '灌浆期', '成熟期'];
+const GROWTH_STAGES = ['苗期', '拔节期', '抽穗期', '灌浆期', '成熟期'];
 
 const PIE_COLORS = ['#1B5E20', '#2E7D32', '#66BB6A', '#81C784', '#A5D6A7'];
 const BAR_COLORS = ['#1B5E20', '#66BB6A', '#5D4037', '#8D6E63', '#388E3C'];
@@ -104,6 +104,7 @@ export default function ReportsPage() {
   const [activeTab, setActiveTab] = useState<TabType>('all');
   const [reports, setReports] = useState<Report[]>([]);
   const [varieties, setVarieties] = useState<Variety[]>([]);
+  const [simulations, setSimulations] = useState<SimulationTask[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchText, setSearchText] = useState('');
   const [varietyFilter, setVarietyFilter] = useState<string>('');
@@ -124,13 +125,15 @@ export default function ReportsPage() {
   async function loadData() {
     try {
       setLoading(true);
-      const [repRes, varRes] = await Promise.all([
+      const [repRes, varRes, simRes] = await Promise.all([
         fetch('/api/reports'),
         fetch('/api/varieties'),
+        fetch('/api/simulations'),
       ]);
 
       let reportsData: Report[] = [];
       let varietiesData: Variety[] = [];
+      let simulationsData: SimulationTask[] = [];
 
       if (repRes.ok) {
         const json = await repRes.json();
@@ -147,8 +150,14 @@ export default function ReportsPage() {
         if (json.success) varietiesData = json.data || [];
       }
 
+      if (simRes.ok) {
+        const json = await simRes.json();
+        if (json.success) simulationsData = json.data || [];
+      }
+
       setReports(reportsData);
       setVarieties(varietiesData);
+      setSimulations(simulationsData);
     } catch (e: any) {
       const errMsg = e?.message || '网络错误，加载失败';
       alert(errMsg);
@@ -241,6 +250,21 @@ export default function ReportsPage() {
     ];
   }
 
+  function detectFertilizerTreatment(plan: FertilizerPlan): string {
+    const apps = plan.applications;
+    const totalFert = apps.reduce((a, b) => a + b.amount, 0);
+    const hasControlledRelease = apps.some((a) => a.type.includes('控释'));
+    const hasOrganic = apps.some((a) => a.type.includes('有机') || a.type.includes('农家肥'));
+    const controlledReleaseAmount = apps.filter((a) => a.type.includes('控释')).reduce((a, b) => a + b.amount, 0);
+    const controlledReleaseRatio = totalFert > 0 ? controlledReleaseAmount / totalFert : 0;
+
+    if (hasControlledRelease) return '控释肥';
+    if (totalFert < 320) return '减氮20%';
+    if (hasOrganic) return '有机替代';
+    if (apps.length >= 4 && controlledReleaseRatio > 0) return '优化施肥';
+    return '常规施肥';
+  }
+
   const filteredReports = useMemo(() => {
     let list = [...reports];
     if (searchText.trim()) {
@@ -256,6 +280,27 @@ export default function ReportsPage() {
     }
     return list;
   }, [reports, searchText, varietyFilter]);
+
+  const exportFilteredReports = useMemo(() => {
+    let list = [...reports];
+    if (exportVariety) {
+      list = list.filter((r) => r.varietyName === exportVariety);
+    }
+    if (exportTreatment) {
+      list = list.filter((r) => {
+        const sim = simulations.find((s) => s.id === r.simulationId);
+        if (!sim) return false;
+        const planType = detectFertilizerTreatment(sim.fertilizerPlan);
+        return planType === exportTreatment;
+      });
+    }
+    if (exportStage && exportStage !== '全生育期') {
+      list = list.filter((r) =>
+        r.biomassDistribution.some((b) => b.stage === exportStage)
+      );
+    }
+    return list;
+  }, [reports, simulations, exportVariety, exportTreatment, exportStage]);
 
   async function handlePreview(report: Report) {
     try {
@@ -635,7 +680,7 @@ export default function ReportsPage() {
 
             <div className="flex items-center justify-between pt-6 border-t border-soil-100">
               <div className="text-sm text-soil-500">
-                将导出 <span className="font-semibold text-soil-700">{filteredReports.length}</span> 条报告数据
+                将导出 <span className="font-semibold text-soil-700">{exportFilteredReports.length}</span> 条报告数据
               </div>
               <button
                 className="btn-primary flex items-center gap-2"
@@ -670,7 +715,7 @@ export default function ReportsPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredReports.slice(0, 5).map((report) => (
+                  {exportFilteredReports.slice(0, 5).map((report) => (
                     <tr key={report.id} className="border-t border-gray-100">
                       <td className="table-cell">{report.simulationName}</td>
                       <td className="table-cell">{report.varietyName}</td>
@@ -683,7 +728,7 @@ export default function ReportsPage() {
                 </tbody>
               </table>
             </div>
-            {filteredReports.length > 5 && (
+            {exportFilteredReports.length > 5 && (
               <div className="text-center text-sm text-soil-400 mt-3">
                 仅显示前 5 条，完整数据请导出后查看
               </div>

@@ -23,6 +23,7 @@ import { v4 as uuid } from 'uuid';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
+import PDFDocument from 'pdfkit';
 
 const STATUS_FLOW: SimulationStatus[] = [
   'pending_validation',
@@ -458,103 +459,202 @@ export function getReportById(reportId: string): Report | null {
   };
 }
 
-export function generateReportPdf(reportId: string): { success: boolean; pdfUrl?: string; error?: string } {
+export async function generateReportPdf(reportId: string): Promise<{ success: boolean; pdfUrl?: string; error?: string }> {
   const report = getReportById(reportId);
   if (!report) return { success: false, error: '报告不存在' };
-  const filePath = path.join(reportsDir, `${reportId}.html`);
-  const pdfUrl = `/data/reports/${reportId}.html`;
+  const filePath = path.join(reportsDir, `${reportId}.pdf`);
+  const pdfUrl = `/data/reports/${reportId}.pdf`;
   const nb = report.nitrogenBalance;
   const cf = report.carbonFootprint;
   const stages = report.biomassDistribution.map((b) => b.stage).join('、') || '苗期、拔节期、抽穗期、灌浆期、成熟期';
-  const html = `<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="UTF-8">
-<title>作物生长模拟报告 - ${report.simulationName || report.id}</title>
-<style>
-body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; padding: 40px; max-width: 900px; margin: 0 auto; color: #333; }
-h1 { color: #2d5016; border-bottom: 3px solid #4a7c23; padding-bottom: 12px; }
-h2 { color: #3a6b1e; margin-top: 32px; border-left: 4px solid #6aa84f; padding-left: 12px; }
-.info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 20px 0; }
-.info-item { background: #f5f9f0; padding: 14px 18px; border-radius: 8px; }
-.info-item .label { color: #666; font-size: 13px; margin-bottom: 4px; }
-.info-item .value { font-size: 18px; font-weight: 600; color: #2d5016; }
-.metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin: 24px 0; }
-.metric { background: linear-gradient(135deg, #e8f5e0, #d4ecd0); padding: 20px; border-radius: 10px; text-align: center; }
-.metric .name { font-size: 13px; color: #5a7a4a; margin-bottom: 8px; }
-.metric .val { font-size: 24px; font-weight: 700; color: #2d5016; }
-.metric .unit { font-size: 12px; color: #888; font-weight: 400; }
-table { width: 100%; border-collapse: collapse; margin: 16px 0; }
-th, td { padding: 12px 16px; text-align: left; border-bottom: 1px solid #e0e0e0; }
-th { background: #f0f7ea; color: #2d5016; font-weight: 600; }
-.section { margin: 20px 0; }
-.footer { margin-top: 40px; padding-top: 20px; border-top: 1px solid #ddd; color: #888; font-size: 12px; text-align: center; }
-</style>
-</head>
-<body>
-<h1>📊 作物生长模拟报告</h1>
-<div class="section">
-  <h2>📋 基本信息</h2>
-  <div class="info-grid">
-    <div class="info-item"><div class="label">模拟任务名称</div><div class="value">${report.simulationName || '-'}</div></div>
-    <div class="info-item"><div class="label">作物品种</div><div class="value">${report.varietyName}</div></div>
-    <div class="info-item"><div class="label">报告编号</div><div class="value">${report.id.slice(0, 8)}</div></div>
-    <div class="info-item"><div class="label">生成时间</div><div class="value">${report.createdAt || new Date().toLocaleString('zh-CN')}</div></div>
-  </div>
-</div>
-<div class="section">
-  <h2>🎯 核心指标</h2>
-  <div class="metrics">
-    <div class="metric"><div class="name">最终产量</div><div class="val">${report.finalYield || 0}<span class="unit"> kg/ha</span></div></div>
-    <div class="metric"><div class="name">水分利用效率 WUE</div><div class="val">${report.wue || 0}<span class="unit"> kg/m³</span></div></div>
-    <div class="metric"><div class="name">氮素利用效率 NUE</div><div class="val">${report.nue || 0}<span class="unit"> kg/kg</span></div></div>
-    <div class="metric"><div class="name">模拟生育期</div><div class="val" style="font-size:14px;">${stages}</div></div>
-  </div>
-</div>
-<div class="section">
-  <h2>🌿 生物量分配（各生育期）</h2>
-  <table>
-    <thead><tr><th>生育期</th><th>叶片 (t/ha)</th><th>茎秆 (t/ha)</th><th>根系 (t/ha)</th><th>籽粒 (t/ha)</th></tr></thead>
-    <tbody>
-      ${report.biomassDistribution.map((b) => `<tr><td>${b.stage}</td><td>${b.leaf.toFixed(2)}</td><td>${b.stem.toFixed(2)}</td><td>${b.root.toFixed(2)}</td><td>${b.grain.toFixed(2)}</td></tr>`).join('')}
-    </tbody>
-  </table>
-</div>
-<div class="section">
-  <h2>💧 氮素平衡</h2>
-  <table>
-    <thead><tr><th>项目</th><th>数值 (kg N/ha)</th><th>占比</th></tr></thead>
-    <tbody>
-      <tr><td>总投入</td><td>${nb.input?.toFixed(1) || '-'}</td><td>100%</td></tr>
-      <tr><td>作物吸收</td><td>${nb.uptake?.toFixed(1) || '-'}</td><td>${nb.input ? ((nb.uptake / nb.input) * 100).toFixed(1) : '-'}%</td></tr>
-      <tr><td>淋失损失</td><td>${nb.leaching?.toFixed(1) || '-'}</td><td>${nb.input ? ((nb.leaching / nb.input) * 100).toFixed(1) : '-'}%</td></tr>
-      <tr><td>挥发损失</td><td>${nb.volatilization?.toFixed(1) || '-'}</td><td>${nb.input ? ((nb.volatilization / nb.input) * 100).toFixed(1) : '-'}%</td></tr>
-      <tr><td>土壤残留</td><td>${nb.residue?.toFixed(1) || '-'}</td><td>${nb.input ? ((nb.residue / nb.input) * 100).toFixed(1) : '-'}%</td></tr>
-    </tbody>
-  </table>
-</div>
-<div class="section">
-  <h2>🌍 碳足迹分析</h2>
-  <table>
-    <thead><tr><th>排放源</th><th>排放量 (kg CO₂e/ha)</th><th>占比</th></tr></thead>
-    <tbody>
-      <tr><td>肥料生产与施用</td><td>${cf.fertilizerEmission?.toFixed(1) || '-'}</td><td>${cf.totalEmission ? ((cf.fertilizerEmission / cf.totalEmission) * 100).toFixed(1) : '-'}%</td></tr>
-      <tr><td>灌溉能耗</td><td>${cf.irrigationEmission?.toFixed(1) || '-'}</td><td>${cf.totalEmission ? ((cf.irrigationEmission / cf.totalEmission) * 100).toFixed(1) : '-'}%</td></tr>
-      <tr><td>土壤排放</td><td>${cf.soilEmission?.toFixed(1) || '-'}</td><td>${cf.totalEmission ? ((cf.soilEmission / cf.totalEmission) * 100).toFixed(1) : '-'}%</td></tr>
-      <tr style="font-weight:600;background:#f0f7ea;"><td>总排放量</td><td>${cf.totalEmission?.toFixed(1) || '-'}</td><td>100%</td></tr>
-      <tr><td>单位产量排放</td><td colspan="2">${cf.perUnitYield?.toFixed(3) || '-'} kg CO₂e / t 产量</td></tr>
-    </tbody>
-  </table>
-</div>
-<div class="footer">
-  <p>本报告由作物生长模拟系统自动生成 | 仅供科研和生产决策参考</p>
-  <p>Report ID: ${report.id}</p>
-</div>
-</body>
-</html>`;
-  fs.writeFileSync(filePath, html, 'utf-8');
-  execute(`UPDATE reports SET pdf_url = ? WHERE id = ?`, [pdfUrl, reportId]);
-  return { success: true, pdfUrl };
+
+  const doc = new PDFDocument({ margin: 50, size: 'A4' });
+
+  const fontPaths = [
+    '/Library/Fonts/Arial Unicode.ttf',
+    '/System/Library/Fonts/STHeiti Light.ttc',
+    '/System/Library/Fonts/STHeiti Medium.ttc',
+    '/System/Library/Fonts/PingFang.ttc',
+  ];
+  let fontRegistered = false;
+  for (const fp of fontPaths) {
+    if (fs.existsSync(fp)) {
+      try {
+        doc.registerFont('chinese', fp);
+        fontRegistered = true;
+        break;
+      } catch (_e) {
+        continue;
+      }
+    }
+  }
+  if (!fontRegistered) {
+    console.warn('未找到中文字体，将使用内置字体，中文可能显示异常');
+  }
+  const fontName = fontRegistered ? 'chinese' : 'Helvetica';
+
+  const chunks: Buffer[] = [];
+  doc.on('data', (chunk) => chunks.push(chunk));
+  doc.on('end', () => {
+    const buffer = Buffer.concat(chunks);
+    fs.writeFileSync(filePath, buffer);
+  });
+
+  doc.font(fontName);
+
+  doc.fillColor('#2d5016').fontSize(24).text('作物生长模拟报告', { align: 'center' });
+  doc.moveDown(0.5);
+  doc.fontSize(14).fillColor('#666').text(`模拟任务：${report.simulationName || '-'} | 品种：${report.varietyName}`, { align: 'center' });
+  doc.moveDown(1);
+  doc.strokeColor('#4a7c23').lineWidth(3).moveTo(50, doc.y).lineTo(545, doc.y).stroke();
+  doc.moveDown(2);
+
+  doc.fillColor('#3a6b1e').fontSize(16).text('基本信息');
+  doc.moveDown(0.5);
+  const infoItems = [
+    ['模拟任务名称', report.simulationName || '-'],
+    ['作物品种', report.varietyName],
+    ['报告编号', report.id.slice(0, 8)],
+    ['生成时间', report.createdAt || new Date().toLocaleString('zh-CN')],
+  ];
+  const colWidth = 247;
+  const rowHeight = 50;
+  infoItems.forEach((item, i) => {
+    const col = i % 2;
+    const row = Math.floor(i / 2);
+    const x = 50 + col * colWidth;
+    const y = doc.y + row * rowHeight;
+    doc.rect(x, y, colWidth - 5, rowHeight - 5).strokeColor('#ddd').lineWidth(0.5).stroke();
+    doc.fillColor('#666').fontSize(11).text(item[0], x + 10, y + 8);
+    doc.fillColor('#2d5016').fontSize(14).text(item[1], x + 10, y + 25);
+  });
+  doc.moveDown(Math.ceil(infoItems.length / 2) * 1.5);
+
+  doc.fillColor('#3a6b1e').fontSize(16).text('核心指标');
+  doc.moveDown(0.5);
+  const metrics = [
+    { name: '产量', value: String(report.finalYield || 0), unit: 'kg/ha' },
+    { name: 'WUE', value: String(report.wue || 0), unit: 'kg/m³' },
+    { name: 'NUE', value: String(report.nue || 0), unit: 'kg/kg' },
+    { name: '生育期', value: stages.slice(0, 12), unit: '' },
+  ];
+  const metricWidth = 110;
+  const metricHeight = 80;
+  metrics.forEach((m, i) => {
+    const x = 50 + i * (metricWidth + 10);
+    const y = doc.y;
+    doc.roundedRect(x, y, metricWidth, metricHeight, 5).strokeColor('#6aa84f').lineWidth(1).stroke();
+    doc.fillColor('#e8f5e0').roundedRect(x, y, metricWidth, metricHeight, 5).fill();
+    doc.fillColor('#5a7a4a').fontSize(10).text(m.name, x, y + 8, { width: metricWidth, align: 'center' });
+    doc.fillColor('#2d5016').fontSize(16).text(m.value, x, y + 28, { width: metricWidth, align: 'center' });
+    if (m.unit) {
+      doc.fillColor('#888').fontSize(9).text(m.unit, x, y + 50, { width: metricWidth, align: 'center' });
+    }
+  });
+  doc.moveDown(2.5);
+
+  doc.fillColor('#3a6b1e').fontSize(16).text('生物量分配（各生育期）');
+  doc.moveDown(0.5);
+  drawTable(doc, fontName,
+    ['生育期', '叶片 (t/ha)', '茎秆 (t/ha)', '根系 (t/ha)', '籽粒 (t/ha)'],
+    report.biomassDistribution.map((b) => [b.stage, b.leaf.toFixed(2), b.stem.toFixed(2), b.root.toFixed(2), b.grain.toFixed(2)])
+  );
+  doc.moveDown(1);
+
+  doc.fillColor('#3a6b1e').fontSize(16).text('氮素平衡');
+  doc.moveDown(0.5);
+  drawTable(doc, fontName,
+    ['项目', '数值 (kg N/ha)', '占比'],
+    [
+      ['总投入', nb.input?.toFixed(1) || '-', '100%'],
+      ['作物吸收', nb.uptake?.toFixed(1) || '-', nb.input ? ((nb.uptake / nb.input) * 100).toFixed(1) + '%' : '-'],
+      ['淋失损失', nb.leaching?.toFixed(1) || '-', nb.input ? ((nb.leaching / nb.input) * 100).toFixed(1) + '%' : '-'],
+      ['挥发损失', nb.volatilization?.toFixed(1) || '-', nb.input ? ((nb.volatilization / nb.input) * 100).toFixed(1) + '%' : '-'],
+      ['土壤残留', nb.residue?.toFixed(1) || '-', nb.input ? ((nb.residue / nb.input) * 100).toFixed(1) + '%' : '-'],
+    ]
+  );
+  doc.moveDown(1);
+
+  doc.fillColor('#3a6b1e').fontSize(16).text('碳足迹分析');
+  doc.moveDown(0.5);
+  drawTable(doc, fontName,
+    ['排放源', '排放量 (kg CO₂e/ha)', '占比'],
+    [
+      ['肥料生产与施用', cf.fertilizerEmission?.toFixed(1) || '-', cf.totalEmission ? ((cf.fertilizerEmission / cf.totalEmission) * 100).toFixed(1) + '%' : '-'],
+      ['灌溉能耗', cf.irrigationEmission?.toFixed(1) || '-', cf.totalEmission ? ((cf.irrigationEmission / cf.totalEmission) * 100).toFixed(1) + '%' : '-'],
+      ['土壤排放', cf.soilEmission?.toFixed(1) || '-', cf.totalEmission ? ((cf.soilEmission / cf.totalEmission) * 100).toFixed(1) + '%' : '-'],
+      ['总排放量', cf.totalEmission?.toFixed(1) || '-', '100%'],
+      ['单位产量排放', `${cf.perUnitYield?.toFixed(3) || '-'} kg CO₂e / t 产量`, ''],
+    ],
+    [3]
+  );
+  doc.moveDown(2);
+
+  const pageHeight = 841.89;
+  const footerY = pageHeight - 50;
+  doc.strokeColor('#ddd').lineWidth(0.5).moveTo(50, footerY).lineTo(545, footerY).stroke();
+  doc.fillColor('#888').fontSize(10).text('本报告由作物生长模拟系统自动生成 | 仅供科研和生产决策参考', 50, footerY + 10, { width: 495, align: 'center' });
+  doc.text(`Report ID: ${report.id}`, 50, footerY + 25, { width: 495, align: 'center' });
+
+  doc.end();
+
+  return new Promise((resolve) => {
+    doc.on('end', () => {
+      execute(`UPDATE reports SET pdf_url = ? WHERE id = ?`, [pdfUrl, reportId]);
+      resolve({ success: true, pdfUrl });
+    });
+  });
+}
+
+function drawTable(doc: PDFKit.PDFDocument, fontName: string, headers: string[], rows: string[][], highlightRows: number[] = []) {
+  const colWidths: number[] = [];
+  const totalWidth = 495;
+  const headerWidth = totalWidth / headers.length;
+  headers.forEach(() => colWidths.push(headerWidth));
+
+  const cellPadding = 8;
+  const rowHeight = 28;
+  let currentY = doc.y;
+
+  doc.font(fontName);
+
+  headers.forEach((header, i) => {
+    const x = 50 + i * colWidths[i];
+    doc.rect(x, currentY, colWidths[i], rowHeight).fillColor('#f0f7ea').fill();
+    doc.rect(x, currentY, colWidths[i], rowHeight).strokeColor('#ddd').lineWidth(0.5).stroke();
+    doc.fillColor('#2d5016').fontSize(11).text(header, x + cellPadding, currentY + cellPadding);
+  });
+  currentY += rowHeight;
+
+  rows.forEach((row, rowIdx) => {
+    const isHighlight = highlightRows.includes(rowIdx);
+    row.forEach((cell, colIdx) => {
+      const x = 50 + colIdx * colWidths[colIdx];
+      if (isHighlight) {
+        doc.rect(x, currentY, colWidths[colIdx], rowHeight).fillColor('#f0f7ea').fill();
+      }
+      doc.rect(x, currentY, colWidths[colIdx], rowHeight).strokeColor('#ddd').lineWidth(0.5).stroke();
+      doc.fillColor(isHighlight ? '#2d5016' : '#333').fontSize(10).text(cell, x + cellPadding, currentY + cellPadding);
+    });
+    currentY += rowHeight;
+  });
+
+  doc.y = currentY + 10;
+}
+
+export function detectFertilizerTreatment(plan: FertilizerPlan): string {
+  const apps = plan.applications;
+  const totalFert = apps.reduce((a, b) => a + b.amount, 0);
+  const hasControlledRelease = apps.some((a) => a.type.includes('控释'));
+  const hasOrganic = apps.some((a) => a.type.includes('有机') || a.type.includes('农家肥'));
+  const controlledReleaseAmount = apps.filter((a) => a.type.includes('控释')).reduce((a, b) => a + b.amount, 0);
+  const controlledReleaseRatio = totalFert > 0 ? controlledReleaseAmount / totalFert : 0;
+
+  if (hasControlledRelease) return '控释肥';
+  if (totalFert < 320) return '减氮20%';
+  if (hasOrganic) return '有机替代';
+  if (apps.length >= 4 && controlledReleaseRatio > 0) return '优化施肥';
+  return '常规施肥';
 }
 
 export function createAlert(input: Omit<Alert, 'id' | 'status' | 'reviewedBy' | 'reviewNote' | 'createdAt'>): Alert {
@@ -624,34 +724,59 @@ export function listAlerts(status?: string): Alert[] {
   }));
 }
 
-export function reviewAlert(id: string, approved: boolean, note: string, userId: string): { alert: Alert | null; log?: AdjustmentLog | null } {
-  let status = approved ? 'adjusted' : 'dismissed';
+export function reviewAlert(id: string, approved: boolean, note: string, userId: string): { 
+  alert: Alert | null; 
+  log: AdjustmentLog | null;
+  previousIrrigation?: number;
+  newIrrigation?: number;
+  previousFertilizer?: number;
+  newFertilizer?: number;
+} {
+  const status = approved ? 'adjusted' : 'dismissed';
   execute(
     `UPDATE alerts SET status = ?, reviewed_by = ?, review_note = ? WHERE id = ?`,
     [status, userId, note, id],
   );
   let log: AdjustmentLog | null = null;
+  let previousIrrigation: number | undefined;
+  let newIrrigation: number | undefined;
+  let previousFertilizer: number | undefined;
+  let newFertilizer: number | undefined;
+  
   if (approved) {
     const alert = getAlert(id);
     const task = alert ? getSimulation(alert.simulationId) : null;
     if (task) {
       const plan = task.fertilizerPlan;
       const totalFert = plan.applications.reduce((a, b) => a + b.amount, 0);
-      let newIrr = task.soilParams.initialMoisture + 5;
-      let newFert = alert?.type === 'nitrogen_leaching' ? totalFert * 0.8 : totalFert;
+      let newIrr = task.soilParams.initialMoisture + 5; // eslint-disable-line prefer-const
+      const newFert = alert?.type === 'nitrogen_leaching' ? totalFert * 0.8 : totalFert;
       if (alert?.type === 'water_deficit') newIrr = 28;
+      
+      previousIrrigation = task.soilParams.initialMoisture;
+      newIrrigation = newIrr;
+      previousFertilizer = totalFert;
+      newFertilizer = +newFert.toFixed(0);
+      
       log = createAdjustmentLog({
         alertId: id,
-        previousIrrigation: task.soilParams.initialMoisture,
-        newIrrigation: newIrr,
-        previousFertilizer: totalFert,
-        newFertilizer: +newFert.toFixed(0),
+        previousIrrigation,
+        newIrrigation,
+        previousFertilizer,
+        newFertilizer,
         reason: note || '自动调整',
         adjustedBy: userId,
       });
     }
   }
-  return { alert: getAlert(id), log };
+  return { 
+    alert: getAlert(id), 
+    log,
+    previousIrrigation,
+    newIrrigation,
+    previousFertilizer,
+    newFertilizer,
+  };
 }
 
 export function createAdjustmentLog(input: Omit<AdjustmentLog, 'id' | 'adjustedAt'>): AdjustmentLog {

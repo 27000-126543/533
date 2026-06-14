@@ -90,6 +90,7 @@ export default function AlertsPage() {
   const [approvalSubmitting, setApprovalSubmitting] = useState(false);
 
   const [showAdjustmentPreview, setShowAdjustmentPreview] = useState(false);
+  const [latestAdjustment, setLatestAdjustment] = useState<AdjustmentLog | null>(null);
 
   useEffect(() => {
     loadData();
@@ -400,6 +401,12 @@ export default function AlertsPage() {
     setSelectedAlert(alert);
     setReviewNote(alert.reviewNote || '');
     setShowAdjustmentPreview(alert.status === 'adjusted');
+    if (alert.status === 'adjusted') {
+      const existingLog = adjustmentLogs.find((log) => log.alertId === alert.id);
+      setLatestAdjustment(existingLog || null);
+    } else {
+      setLatestAdjustment(null);
+    }
   }
 
   async function handleReview(action: 'approve' | 'reject') {
@@ -418,11 +425,15 @@ export default function AlertsPage() {
       if (res.ok) {
         const json = await res.json();
         if (json.success) {
-          updateAlertLocally(selectedAlert.id, json.data);
+          updateAlertLocally(selectedAlert.id, json.data.alert);
           if (approved) {
             setShowAdjustmentPreview(true);
+            if (json.data.log && json.data.log.alertId === selectedAlert.id) {
+              setLatestAdjustment(json.data.log);
+            }
           } else {
             setShowAdjustmentPreview(false);
+            setLatestAdjustment(null);
           }
         } else {
           mockUpdateAlert(selectedAlert.id, action);
@@ -450,8 +461,32 @@ export default function AlertsPage() {
     updateAlertLocally(id, updated);
     if (action === 'approve') {
       setShowAdjustmentPreview(true);
+      const previousIrrigation = 3000;
+      const previousFertilizer = 450;
+      let newIrrigation = previousIrrigation;
+      let newFertilizer = previousFertilizer;
+      if (selectedAlert!.type === 'water_deficit') {
+        newIrrigation = Math.round(previousIrrigation * 1.2);
+        newFertilizer = previousFertilizer;
+      } else if (selectedAlert!.type === 'nitrogen_leaching') {
+        newIrrigation = Math.round(previousIrrigation * 0.9);
+        newFertilizer = Math.round(previousFertilizer * 0.85);
+      }
+      setLatestAdjustment({
+        id: 'mock-log',
+        alertId: selectedAlert!.id,
+        previousIrrigation,
+        newIrrigation,
+        previousFertilizer,
+        newFertilizer,
+        reason: reviewNote || '模拟调整',
+        adjustedBy: 'u1',
+        adjustedByName: '当前用户',
+        adjustedAt: new Date().toISOString(),
+      });
     } else {
       setShowAdjustmentPreview(false);
+      setLatestAdjustment(null);
     }
   }
 
@@ -510,17 +545,35 @@ export default function AlertsPage() {
 
   const adjustmentPreview = useMemo(() => {
     if (!selectedAlert) return null;
-    if (selectedAlert.type === 'water_deficit') {
+
+    if (latestAdjustment && latestAdjustment.alertId === selectedAlert.id) {
       return {
-        irrigation: { previous: 3000, new: 3600 },
-        fertilizer: { previous: 450, new: 450 },
+        irrigation: {
+          previous: latestAdjustment.previousIrrigation,
+          new: latestAdjustment.newIrrigation,
+        },
+        fertilizer: {
+          previous: latestAdjustment.previousFertilizer,
+          new: latestAdjustment.newFertilizer,
+        },
       };
     }
+
+    const baseIrrigation = 3000;
+    const baseFertilizer = 450;
+
+    if (selectedAlert.type === 'water_deficit') {
+      return {
+        irrigation: { previous: baseIrrigation, new: Math.round(baseIrrigation * 1.2) },
+        fertilizer: { previous: baseFertilizer, new: baseFertilizer },
+      };
+    }
+
     return {
-      irrigation: { previous: 3000, new: 2700 },
-      fertilizer: { previous: 450, new: 380 },
+      irrigation: { previous: baseIrrigation, new: Math.round(baseIrrigation * 0.9) },
+      fertilizer: { previous: baseFertilizer, new: Math.round(baseFertilizer * 0.85) },
     };
-  }, [selectedAlert]);
+  }, [selectedAlert, latestAdjustment]);
 
   return (
     <div className="p-6 min-h-screen">
