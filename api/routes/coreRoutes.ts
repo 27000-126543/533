@@ -190,24 +190,23 @@ router.get('/reports/export', (req: Request, res: Response) => {
     }
   });
 
-  let rows = allReports.filter((r) => {
+  const rows = allReports.filter((r) => {
     if (variety && variety !== 'all' && r.varietyName !== variety) return false;
     if (treatment && treatment !== 'all') {
       const planType = reportTreatments.get(r.id);
       if (planType !== treatment) return false;
     }
+    if (stage && stage !== 'all') {
+      const hasStage = r.biomassDistribution.some((b) => b.stage === stage);
+      if (!hasStage) return false;
+    }
     return true;
   });
 
-  if (rows.length === 0 && treatment && treatment !== 'all') {
-    rows = allReports.filter((r) => {
-      if (variety && variety !== 'all' && r.varietyName !== variety) return false;
-      return true;
-    });
-  }
-
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', 'attachment; filename="growth_soil_data.csv"');
+  res.setHeader('X-Total-Count', String(rows.length));
+  res.setHeader('X-Has-Data', rows.length > 0 ? 'true' : 'false');
   const header = ['品种', '生育期', '处理', '叶面积指数', '生物量(籽粒)', '生物量(茎叶)', '土壤含水量(%)', '矿质氮(mg/kg)', '产量(kg/ha)', 'WUE(kg/m³)', 'NUE(kg/kg)'];
   const lines = [header.join(',')];
   rows.forEach((r) => {
@@ -235,23 +234,6 @@ router.get('/reports/export', (req: Request, res: Response) => {
         ].join(','),
       );
     });
-    if (distribution.length === 0) {
-      lines.push(
-        [
-          r.varietyName,
-          (stage as string) || '全生育期',
-          planType,
-          (r.laiSeries[0]?.value ?? 0).toFixed(3),
-          '0.00',
-          '0.00',
-          '22.0',
-          '65.0',
-          r.finalYield,
-          r.wue,
-          r.nue,
-        ].join(','),
-      );
-    }
   });
   res.send('\ufeff' + lines.join('\n'));
 });

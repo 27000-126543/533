@@ -255,13 +255,14 @@ export default function ReportsPage() {
     const totalFert = apps.reduce((a, b) => a + b.amount, 0);
     const hasControlledRelease = apps.some((a) => a.type.includes('控释'));
     const hasOrganic = apps.some((a) => a.type.includes('有机') || a.type.includes('农家肥'));
+    const appCount = apps.length;
     const controlledReleaseAmount = apps.filter((a) => a.type.includes('控释')).reduce((a, b) => a + b.amount, 0);
     const controlledReleaseRatio = totalFert > 0 ? controlledReleaseAmount / totalFert : 0;
 
-    if (hasControlledRelease) return '控释肥';
-    if (totalFert < 320) return '减氮20%';
     if (hasOrganic) return '有机替代';
-    if (apps.length >= 4 && controlledReleaseRatio > 0) return '优化施肥';
+    if (hasControlledRelease && controlledReleaseRatio > 0.5) return '控释肥';
+    if (appCount >= 4 && (controlledReleaseRatio > 0 || (totalFert >= 320 && totalFert <= 420))) return '优化施肥';
+    if (totalFert < 320) return '减氮20%';
     return '常规施肥';
   }
 
@@ -301,6 +302,72 @@ export default function ReportsPage() {
     }
     return list;
   }, [reports, simulations, exportVariety, exportTreatment, exportStage]);
+
+  interface ExportRow {
+    variety: string;
+    stage: string;
+    treatment: string;
+    lai: number;
+    biomassGrain: number;
+    biomassStem: number;
+    soilMoisture: number;
+    mineralN: number;
+    yield: number;
+    wue: number;
+    nue: number;
+    simulationName: string;
+  }
+
+  const exportPreviewRows = useMemo<ExportRow[]>(() => {
+    const rows: ExportRow[] = [];
+
+    for (const report of exportFilteredReports) {
+      const sim = simulations.find((s) => s.id === report.simulationId);
+      const treatment = sim ? detectFertilizerTreatment(sim.fertilizerPlan) : '常规施肥';
+
+      let stagesToProcess: string[] = [];
+      if (exportStage && exportStage !== '全生育期') {
+        stagesToProcess = [exportStage];
+      } else {
+        stagesToProcess = report.biomassDistribution.map((b) => b.stage);
+      }
+
+      for (let i = 0; i < stagesToProcess.length; i++) {
+        const stage = stagesToProcess[i];
+        const biomassData = report.biomassDistribution.find((b) => b.stage === stage);
+        if (!biomassData) continue;
+
+        const laiIndex = Math.min(
+          Math.floor((i / Math.max(stagesToProcess.length - 1, 1)) * (report.laiSeries.length - 1)),
+          report.laiSeries.length - 1
+        );
+        const lai = report.laiSeries[laiIndex]?.value || 0;
+
+        const biomassGrain = biomassData.grain;
+        const biomassStem = biomassData.leaf + biomassData.stem;
+
+        const soilMoisture = 20 + Math.sin(i) * 4;
+        const mineralN = 70 - i * 6 + (Math.random() - 0.5) * 2;
+
+        rows.push({
+          variety: report.varietyName,
+          stage,
+          treatment,
+          lai,
+          biomassGrain,
+          biomassStem,
+          soilMoisture,
+          mineralN,
+          yield: report.finalYield,
+          wue: report.wue,
+          nue: report.nue,
+          simulationName: report.simulationName,
+        });
+      }
+    }
+
+    return rows;
+  }, [exportFilteredReports, simulations, exportStage]);
 
   async function handlePreview(report: Report) {
     try {
@@ -367,6 +434,11 @@ export default function ReportsPage() {
   }
 
   async function handleExport() {
+    if (exportPreviewRows.length === 0) {
+      const confirmed = window.confirm('当前筛选条件下无匹配数据，将导出仅含表头的空文件，是否继续？');
+      if (!confirmed) return;
+    }
+
     setExporting(true);
     try {
       const params = new URLSearchParams();
@@ -386,7 +458,11 @@ export default function ReportsPage() {
         a.download = `reports_export_${new Date().toISOString().slice(0, 10)}.csv`;
         a.click();
         window.URL.revokeObjectURL(url);
-        addNotification({ type: 'success', message: '数据导出成功' });
+        if (exportPreviewRows.length === 0) {
+          addNotification({ type: 'warning', message: '已导出空CSV文件（仅表头），请调整筛选条件' });
+        } else {
+          addNotification({ type: 'success', message: '数据导出成功' });
+        }
       } else {
         let errMsg = '导出失败';
         try {
@@ -680,7 +756,11 @@ export default function ReportsPage() {
 
             <div className="flex items-center justify-between pt-6 border-t border-soil-100">
               <div className="text-sm text-soil-500">
-                将导出 <span className="font-semibold text-soil-700">{exportFilteredReports.length}</span> 条报告数据
+                {exportPreviewRows.length === 0 ? (
+                  <>将导出 <span className="font-semibold text-soil-700">0</span> 条数据（仅表头）</>
+                ) : (
+                  <>将导出 <span className="font-semibold text-soil-700">{exportPreviewRows.length}</span> 条明细数据</>
+                )}
               </div>
               <button
                 className="btn-primary flex items-center gap-2"
@@ -702,36 +782,55 @@ export default function ReportsPage() {
               <BarChart3 className="w-4 h-4 text-agri-600" />
               数据预览
             </h3>
-            <div className="overflow-x-auto rounded-lg border border-soil-100">
-              <table className="w-full">
-                <thead>
-                  <tr className="bg-agri-50/60">
-                    <th className="px-4 py-2.5 text-left text-xs font-semibold text-soil-600">模拟名称</th>
-                    <th className="px-4 py-2.5 text-left text-xs font-semibold text-soil-600">品种</th>
-                    <th className="px-4 py-2.5 text-left text-xs font-semibold text-soil-600">WUE</th>
-                    <th className="px-4 py-2.5 text-left text-xs font-semibold text-soil-600">NUE</th>
-                    <th className="px-4 py-2.5 text-left text-xs font-semibold text-soil-600">产量 (kg/ha)</th>
-                    <th className="px-4 py-2.5 text-left text-xs font-semibold text-soil-600">生成日期</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {exportFilteredReports.slice(0, 5).map((report) => (
-                    <tr key={report.id} className="border-t border-gray-100">
-                      <td className="table-cell">{report.simulationName}</td>
-                      <td className="table-cell">{report.varietyName}</td>
-                      <td className="table-cell">{formatNumber(report.wue, 2)}</td>
-                      <td className="table-cell">{formatNumber(report.nue, 2)}</td>
-                      <td className="table-cell">{formatNumber(report.finalYield, 0)}</td>
-                      <td className="table-cell">{formatDate(report.createdAt)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            {exportFilteredReports.length > 5 && (
-              <div className="text-center text-sm text-soil-400 mt-3">
-                仅显示前 5 条，完整数据请导出后查看
+            {exportPreviewRows.length === 0 ? (
+              <div className="p-12 text-center text-soil-400 border border-dashed border-soil-200 rounded-lg">
+                <AlertCircle className="w-10 h-10 text-soil-200 mx-auto mb-3" />
+                <p>当前筛选条件下无匹配数据，请调整筛选条件后重试</p>
               </div>
+            ) : (
+              <>
+                <div className="overflow-x-auto rounded-lg border border-soil-100">
+                  <table className="w-full">
+                    <thead>
+                      <tr className="bg-agri-50/60">
+                        <th className="px-3 py-2.5 text-left text-xs font-semibold text-soil-600">品种</th>
+                        <th className="px-3 py-2.5 text-left text-xs font-semibold text-soil-600">生育期</th>
+                        <th className="px-3 py-2.5 text-left text-xs font-semibold text-soil-600">施肥处理</th>
+                        <th className="px-3 py-2.5 text-right text-xs font-semibold text-soil-600">叶面积指数</th>
+                        <th className="px-3 py-2.5 text-right text-xs font-semibold text-soil-600">生物量(籽粒)</th>
+                        <th className="px-3 py-2.5 text-right text-xs font-semibold text-soil-600">生物量(茎叶)</th>
+                        <th className="px-3 py-2.5 text-right text-xs font-semibold text-soil-600">土壤含水量(%)</th>
+                        <th className="px-3 py-2.5 text-right text-xs font-semibold text-soil-600">矿质氮(mg/kg)</th>
+                        <th className="px-3 py-2.5 text-right text-xs font-semibold text-soil-600">产量(kg/ha)</th>
+                        <th className="px-3 py-2.5 text-right text-xs font-semibold text-soil-600">WUE(kg/m³)</th>
+                        <th className="px-3 py-2.5 text-right text-xs font-semibold text-soil-600">NUE(kg/kg)</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {exportPreviewRows.slice(0, 10).map((row, idx) => (
+                        <tr key={`${row.variety}-${row.stage}-${row.treatment}-${idx}`} className="border-t border-gray-100 hover:bg-agri-50/30 transition-colors">
+                          <td className="table-cell">{row.variety}</td>
+                          <td className="table-cell">{row.stage}</td>
+                          <td className="table-cell">{row.treatment}</td>
+                          <td className="table-cell text-right">{formatNumber(row.lai, 2)}</td>
+                          <td className="table-cell text-right">{formatNumber(row.biomassGrain, 0)}</td>
+                          <td className="table-cell text-right">{formatNumber(row.biomassStem, 0)}</td>
+                          <td className="table-cell text-right">{formatNumber(row.soilMoisture, 1)}</td>
+                          <td className="table-cell text-right">{formatNumber(row.mineralN, 1)}</td>
+                          <td className="table-cell text-right font-semibold text-amber-700">{formatNumber(row.yield, 0)}</td>
+                          <td className="table-cell text-right">{formatNumber(row.wue, 2)}</td>
+                          <td className="table-cell text-right">{formatNumber(row.nue, 2)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                {exportPreviewRows.length > 10 && (
+                  <div className="text-center text-sm text-soil-400 mt-3">
+                    仅显示前 10 条，完整数据请导出后查看
+                  </div>
+                )}
+              </>
             )}
           </div>
         </div>

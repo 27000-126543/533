@@ -299,7 +299,7 @@ function updateVarietyDeviation(varietyId: string, newYield: number) {
   const deviation = Math.abs((newYield - avg) / avg) * 100;
   const v = getVariety(varietyId);
   if (!v) return;
-  let consecutiveDeviations = deviation > 15 ? v.consecutiveDeviations + 1 : 0;
+  const consecutiveDeviations = deviation > 15 ? v.consecutiveDeviations + 1 : 0;
   let isSuspended = v.isSuspended;
   let suspendedAt = v.suspendedAt;
   let suspendedReason = v.suspendedReason;
@@ -647,13 +647,14 @@ export function detectFertilizerTreatment(plan: FertilizerPlan): string {
   const totalFert = apps.reduce((a, b) => a + b.amount, 0);
   const hasControlledRelease = apps.some((a) => a.type.includes('控释'));
   const hasOrganic = apps.some((a) => a.type.includes('有机') || a.type.includes('农家肥'));
+  const appCount = apps.length;
   const controlledReleaseAmount = apps.filter((a) => a.type.includes('控释')).reduce((a, b) => a + b.amount, 0);
   const controlledReleaseRatio = totalFert > 0 ? controlledReleaseAmount / totalFert : 0;
 
-  if (hasControlledRelease) return '控释肥';
-  if (totalFert < 320) return '减氮20%';
   if (hasOrganic) return '有机替代';
-  if (apps.length >= 4 && controlledReleaseRatio > 0) return '优化施肥';
+  if (hasControlledRelease && controlledReleaseRatio > 0.5) return '控释肥';
+  if (appCount >= 4 && (controlledReleaseRatio > 0 || (totalFert >= 320 && totalFert <= 420))) return '优化施肥';
+  if (totalFert < 320) return '减氮20%';
   return '常规施肥';
 }
 
@@ -749,7 +750,7 @@ export function reviewAlert(id: string, approved: boolean, note: string, userId:
     if (task) {
       const plan = task.fertilizerPlan;
       const totalFert = plan.applications.reduce((a, b) => a + b.amount, 0);
-      let newIrr = task.soilParams.initialMoisture + 5; // eslint-disable-line prefer-const
+      let newIrr = task.soilParams.initialMoisture + 5;  
       const newFert = alert?.type === 'nitrogen_leaching' ? totalFert * 0.8 : totalFert;
       if (alert?.type === 'water_deficit') newIrr = 28;
       
@@ -1145,12 +1146,24 @@ export function ensureSeedSimulations() {
     const v = vs[i % vs.length];
     if (v.isSuspended) continue;
     const name = `${v.name}-${['春季试验', '秋季验证', '优化方案', '标准对照', '增量施肥', '节水灌溉'][i % 6]}-${String.fromCharCode(65 + i)}`;
+    let fertilizerPlan: FertilizerPlan | undefined;
+    if (i === 2) {
+      fertilizerPlan = {
+        applications: [
+          { date: 'D0', type: '控释肥', amount: 120, method: '基肥深施' },
+          { date: 'D30', type: '尿素', amount: 100, method: '追肥' },
+          { date: 'D60', type: '尿素', amount: 80, method: '追肥' },
+          { date: 'D90', type: '磷酸二氢钾', amount: 20, method: '叶面喷施' },
+        ],
+      };
+    }
     const t = createSimulationTask({
       name,
       varietyId: v.id,
       createdBy: agronomist,
+      fertilizerPlan,
     });
-    const jumps = 3 + (i % 5);
+    const jumps = 6 + (i % 3);
     for (let j = 0; j < jumps; j++) advanceSimulation(t.id);
   }
 }
