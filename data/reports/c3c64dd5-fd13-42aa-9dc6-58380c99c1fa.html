@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>作物生长模拟报告 - 郑单958-标准对照-D</title>
+<style>
+body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; padding: 40px; max-width: 900px; margin: 0 auto; color: #333; }
+h1 { color: #2d5016; border-bottom: 3px solid #4a7c23; padding-bottom: 12px; }
+h2 { color: #3a6b1e; margin-top: 32px; border-left: 4px solid #6aa84f; padding-left: 12px; }
+.info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 20px 0; }
+.info-item { background: #f5f9f0; padding: 14px 18px; border-radius: 8px; }
+.info-item .label { color: #666; font-size: 13px; margin-bottom: 4px; }
+.info-item .value { font-size: 18px; font-weight: 600; color: #2d5016; }
+.metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin: 24px 0; }
+.metric { background: linear-gradient(135deg, #e8f5e0, #d4ecd0); padding: 20px; border-radius: 10px; text-align: center; }
+.metric .name { font-size: 13px; color: #5a7a4a; margin-bottom: 8px; }
+.metric .val { font-size: 24px; font-weight: 700; color: #2d5016; }
+.metric .unit { font-size: 12px; color: #888; font-weight: 400; }
+table { width: 100%; border-collapse: collapse; margin: 16px 0; }
+th, td { padding: 12px 16px; text-align: left; border-bottom: 1px solid #e0e0e0; }
+th { background: #f0f7ea; color: #2d5016; font-weight: 600; }
+.section { margin: 20px 0; }
+.footer { margin-top: 40px; padding-top: 20px; border-top: 1px solid #ddd; color: #888; font-size: 12px; text-align: center; }
+</style>
+</head>
+<body>
+<h1>📊 作物生长模拟报告</h1>
+<div class="section">
+  <h2>📋 基本信息</h2>
+  <div class="info-grid">
+    <div class="info-item"><div class="label">模拟任务名称</div><div class="value">郑单958-标准对照-D</div></div>
+    <div class="info-item"><div class="label">作物品种</div><div class="value">郑单958</div></div>
+    <div class="info-item"><div class="label">报告编号</div><div class="value">c3c64dd5</div></div>
+    <div class="info-item"><div class="label">生成时间</div><div class="value">2026-06-14 07:08:53</div></div>
+  </div>
+</div>
+<div class="section">
+  <h2>🎯 核心指标</h2>
+  <div class="metrics">
+    <div class="metric"><div class="name">最终产量</div><div class="val">8557<span class="unit"> kg/ha</span></div></div>
+    <div class="metric"><div class="name">水分利用效率 WUE</div><div class="val">1.96<span class="unit"> kg/m³</span></div></div>
+    <div class="metric"><div class="name">氮素利用效率 NUE</div><div class="val">0.557<span class="unit"> kg/kg</span></div></div>
+    <div class="metric"><div class="name">模拟生育期</div><div class="val" style="font-size:14px;">苗期、拔节期、抽穗期、灌浆期、成熟期</div></div>
+  </div>
+</div>
+<div class="section">
+  <h2>🌿 生物量分配（各生育期）</h2>
+  <table>
+    <thead><tr><th>生育期</th><th>叶片 (t/ha)</th><th>茎秆 (t/ha)</th><th>根系 (t/ha)</th><th>籽粒 (t/ha)</th></tr></thead>
+    <tbody>
+      <tr><td>苗期</td><td>0.80</td><td>0.50</td><td>0.40</td><td>0.00</td></tr><tr><td>拔节期</td><td>2.40</td><td>1.80</td><td>1.10</td><td>0.00</td></tr><tr><td>抽穗期</td><td>4.20</td><td>4.50</td><td>2.00</td><td>1.00</td></tr><tr><td>灌浆期</td><td>3.80</td><td>5.00</td><td>1.80</td><td>3.20</td></tr><tr><td>成熟期</td><td>2.20</td><td>4.20</td><td>1.20</td><td>5.60</td></tr>
+    </tbody>
+  </table>
+</div>
+<div class="section">
+  <h2>💧 氮素平衡</h2>
+  <table>
+    <thead><tr><th>项目</th><th>数值 (kg N/ha)</th><th>占比</th></tr></thead>
+    <tbody>
+      <tr><td>总投入</td><td>339.3</td><td>100%</td></tr>
+      <tr><td>作物吸收</td><td>251.3</td><td>74.1%</td></tr>
+      <tr><td>淋失损失</td><td>32.7</td><td>9.6%</td></tr>
+      <tr><td>挥发损失</td><td>19.3</td><td>5.7%</td></tr>
+      <tr><td>土壤残留</td><td>54.1</td><td>15.9%</td></tr>
+    </tbody>
+  </table>
+</div>
+<div class="section">
+  <h2>🌍 碳足迹分析</h2>
+  <table>
+    <thead><tr><th>排放源</th><th>排放量 (kg CO₂e/ha)</th><th>占比</th></tr></thead>
+    <tbody>
+      <tr><td>肥料生产与施用</td><td>205.6</td><td>31.9%</td></tr>
+      <tr><td>灌溉能耗</td><td>82.5</td><td>12.8%</td></tr>
+      <tr><td>土壤排放</td><td>357.1</td><td>55.3%</td></tr>
+      <tr style="font-weight:600;background:#f0f7ea;"><td>总排放量</td><td>645.2</td><td>100%</td></tr>
+      <tr><td>单位产量排放</td><td colspan="2">75.400 kg CO₂e / t 产量</td></tr>
+    </tbody>
+  </table>
+</div>
+<div class="footer">
+  <p>本报告由作物生长模拟系统自动生成 | 仅供科研和生产决策参考</p>
+  <p>Report ID: c3c64dd5-fd13-42aa-9dc6-58380c99c1fa</p>
+</div>
+</body>
+</html>

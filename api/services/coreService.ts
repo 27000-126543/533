@@ -20,6 +20,9 @@ import type {
 } from '../../shared/types.js';
 import { execute, queryAll, queryOne, runTransaction } from '../db/database.js';
 import { v4 as uuid } from 'uuid';
+import path from 'path';
+import fs from 'fs';
+import { fileURLToPath } from 'url';
 
 const STATUS_FLOW: SimulationStatus[] = [
   'pending_validation',
@@ -30,6 +33,27 @@ const STATUS_FLOW: SimulationStatus[] = [
   'nitrogen_cycle',
   'completed',
 ];
+
+const STATUS_LABELS: Record<SimulationStatus | 'error_rollback', string> = {
+  pending_validation: '待校验',
+  parsing: '数据解析中',
+  initializing: '模型初始化',
+  crop_growth: '作物生长模拟',
+  soil_process: '土壤过程模拟',
+  nitrogen_cycle: '氮素循环模拟',
+  completed: '已完成',
+  error_rollback: '错误回滚',
+};
+
+function statusLabel(status: string): string {
+  return (STATUS_LABELS as any)[status] || status;
+}
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const dataDir = path.join(__dirname, '..', '..', 'data');
+const reportsDir = path.join(dataDir, 'reports');
+if (!fs.existsSync(reportsDir)) fs.mkdirSync(reportsDir, { recursive: true });
 
 export function parseTaskFromRow(row: any): SimulationTask {
   return {
@@ -365,6 +389,172 @@ export function listUsers() {
     active: !!r.active,
     createdAt: r.created_at,
   }));
+}
+
+export function getUserById(id: string) {
+  const row = queryOne(`SELECT id, username, role, active, created_at FROM users WHERE id = ?`, [id]);
+  if (!row) return null;
+  const r = row as any;
+  return {
+    id: r.id,
+    username: r.username,
+    role: r.role,
+    active: !!r.active,
+    createdAt: r.created_at,
+  };
+}
+
+export function setUserActive(id: string, active: boolean, currentUserId: string) {
+  const targetUser = getUserById(id);
+  if (!targetUser) return { success: false, error: '用户不存在' };
+  if (id === currentUserId) return { success: false, error: '不能禁用当前登录用户自己' };
+  const currentUser = getUserById(currentUserId);
+  if (!currentUser || currentUser.role !== 'admin') return { success: false, error: '只有管理员才能修改用户状态' };
+  execute(`UPDATE users SET active = ? WHERE id = ?`, [active ? 1 : 0, id]);
+  return { success: true, data: getUserById(id)! };
+}
+
+export function deleteSimulation(id: string): { success: boolean; error?: string } {
+  const sim = getSimulation(id);
+  if (!sim) return { success: false, error: '模拟任务不存在' };
+  const deletableStatuses: SimulationStatus[] = ['pending_validation', 'parsing', 'initializing', 'error_rollback'];
+  if (!deletableStatuses.includes(sim.status)) {
+    return { success: false, error: `任务已进入「${statusLabel(sim.status)}」阶段，不允许删除` };
+  }
+  const alertIds = queryAll<{ id: string }>(`SELECT id FROM alerts WHERE simulation_id = ?`, [id]).map((a) => a.id);
+  if (alertIds.length > 0) {
+    const placeholders = alertIds.map(() => '?').join(',');
+    execute(`DELETE FROM adjustment_logs WHERE alert_id IN (${placeholders})`, alertIds);
+    execute(`DELETE FROM alerts WHERE simulation_id = ?`, [id]);
+  }
+  execute(`DELETE FROM approvals WHERE simulation_id = ?`, [id]);
+  execute(`DELETE FROM reports WHERE simulation_id = ?`, [id]);
+  execute(`DELETE FROM simulation_tasks WHERE id = ?`, [id]);
+  return { success: true };
+}
+
+export function getReportById(reportId: string): Report | null {
+  const row = queryOne(
+    `SELECT r.*, s.name as sname FROM reports r LEFT JOIN simulation_tasks s ON s.id = r.simulation_id WHERE r.id = ?`,
+    [reportId],
+  );
+  if (!row) return null;
+  const r = row as any;
+  return {
+    id: r.id,
+    simulationId: r.simulation_id,
+    simulationName: r.sname,
+    varietyName: r.variety_name,
+    laiSeries: JSON.parse(r.lai_series || '[]'),
+    biomassDistribution: JSON.parse(r.biomass_distribution || '[]'),
+    yieldContour: JSON.parse(r.yield_contour || '[]'),
+    nitrogenBalance: JSON.parse(r.nitrogen_balance || '{}'),
+    carbonFootprint: JSON.parse(r.carbon_footprint || '{}'),
+    wue: r.wue,
+    nue: r.nue,
+    finalYield: r.final_yield,
+    pdfUrl: r.pdf_url,
+    createdAt: r.created_at,
+  };
+}
+
+export function generateReportPdf(reportId: string): { success: boolean; pdfUrl?: string; error?: string } {
+  const report = getReportById(reportId);
+  if (!report) return { success: false, error: '报告不存在' };
+  const filePath = path.join(reportsDir, `${reportId}.html`);
+  const pdfUrl = `/data/reports/${reportId}.html`;
+  const nb = report.nitrogenBalance;
+  const cf = report.carbonFootprint;
+  const stages = report.biomassDistribution.map((b) => b.stage).join('、') || '苗期、拔节期、抽穗期、灌浆期、成熟期';
+  const html = `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>作物生长模拟报告 - ${report.simulationName || report.id}</title>
+<style>
+body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; padding: 40px; max-width: 900px; margin: 0 auto; color: #333; }
+h1 { color: #2d5016; border-bottom: 3px solid #4a7c23; padding-bottom: 12px; }
+h2 { color: #3a6b1e; margin-top: 32px; border-left: 4px solid #6aa84f; padding-left: 12px; }
+.info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 20px 0; }
+.info-item { background: #f5f9f0; padding: 14px 18px; border-radius: 8px; }
+.info-item .label { color: #666; font-size: 13px; margin-bottom: 4px; }
+.info-item .value { font-size: 18px; font-weight: 600; color: #2d5016; }
+.metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin: 24px 0; }
+.metric { background: linear-gradient(135deg, #e8f5e0, #d4ecd0); padding: 20px; border-radius: 10px; text-align: center; }
+.metric .name { font-size: 13px; color: #5a7a4a; margin-bottom: 8px; }
+.metric .val { font-size: 24px; font-weight: 700; color: #2d5016; }
+.metric .unit { font-size: 12px; color: #888; font-weight: 400; }
+table { width: 100%; border-collapse: collapse; margin: 16px 0; }
+th, td { padding: 12px 16px; text-align: left; border-bottom: 1px solid #e0e0e0; }
+th { background: #f0f7ea; color: #2d5016; font-weight: 600; }
+.section { margin: 20px 0; }
+.footer { margin-top: 40px; padding-top: 20px; border-top: 1px solid #ddd; color: #888; font-size: 12px; text-align: center; }
+</style>
+</head>
+<body>
+<h1>📊 作物生长模拟报告</h1>
+<div class="section">
+  <h2>📋 基本信息</h2>
+  <div class="info-grid">
+    <div class="info-item"><div class="label">模拟任务名称</div><div class="value">${report.simulationName || '-'}</div></div>
+    <div class="info-item"><div class="label">作物品种</div><div class="value">${report.varietyName}</div></div>
+    <div class="info-item"><div class="label">报告编号</div><div class="value">${report.id.slice(0, 8)}</div></div>
+    <div class="info-item"><div class="label">生成时间</div><div class="value">${report.createdAt || new Date().toLocaleString('zh-CN')}</div></div>
+  </div>
+</div>
+<div class="section">
+  <h2>🎯 核心指标</h2>
+  <div class="metrics">
+    <div class="metric"><div class="name">最终产量</div><div class="val">${report.finalYield || 0}<span class="unit"> kg/ha</span></div></div>
+    <div class="metric"><div class="name">水分利用效率 WUE</div><div class="val">${report.wue || 0}<span class="unit"> kg/m³</span></div></div>
+    <div class="metric"><div class="name">氮素利用效率 NUE</div><div class="val">${report.nue || 0}<span class="unit"> kg/kg</span></div></div>
+    <div class="metric"><div class="name">模拟生育期</div><div class="val" style="font-size:14px;">${stages}</div></div>
+  </div>
+</div>
+<div class="section">
+  <h2>🌿 生物量分配（各生育期）</h2>
+  <table>
+    <thead><tr><th>生育期</th><th>叶片 (t/ha)</th><th>茎秆 (t/ha)</th><th>根系 (t/ha)</th><th>籽粒 (t/ha)</th></tr></thead>
+    <tbody>
+      ${report.biomassDistribution.map((b) => `<tr><td>${b.stage}</td><td>${b.leaf.toFixed(2)}</td><td>${b.stem.toFixed(2)}</td><td>${b.root.toFixed(2)}</td><td>${b.grain.toFixed(2)}</td></tr>`).join('')}
+    </tbody>
+  </table>
+</div>
+<div class="section">
+  <h2>💧 氮素平衡</h2>
+  <table>
+    <thead><tr><th>项目</th><th>数值 (kg N/ha)</th><th>占比</th></tr></thead>
+    <tbody>
+      <tr><td>总投入</td><td>${nb.input?.toFixed(1) || '-'}</td><td>100%</td></tr>
+      <tr><td>作物吸收</td><td>${nb.uptake?.toFixed(1) || '-'}</td><td>${nb.input ? ((nb.uptake / nb.input) * 100).toFixed(1) : '-'}%</td></tr>
+      <tr><td>淋失损失</td><td>${nb.leaching?.toFixed(1) || '-'}</td><td>${nb.input ? ((nb.leaching / nb.input) * 100).toFixed(1) : '-'}%</td></tr>
+      <tr><td>挥发损失</td><td>${nb.volatilization?.toFixed(1) || '-'}</td><td>${nb.input ? ((nb.volatilization / nb.input) * 100).toFixed(1) : '-'}%</td></tr>
+      <tr><td>土壤残留</td><td>${nb.residue?.toFixed(1) || '-'}</td><td>${nb.input ? ((nb.residue / nb.input) * 100).toFixed(1) : '-'}%</td></tr>
+    </tbody>
+  </table>
+</div>
+<div class="section">
+  <h2>🌍 碳足迹分析</h2>
+  <table>
+    <thead><tr><th>排放源</th><th>排放量 (kg CO₂e/ha)</th><th>占比</th></tr></thead>
+    <tbody>
+      <tr><td>肥料生产与施用</td><td>${cf.fertilizerEmission?.toFixed(1) || '-'}</td><td>${cf.totalEmission ? ((cf.fertilizerEmission / cf.totalEmission) * 100).toFixed(1) : '-'}%</td></tr>
+      <tr><td>灌溉能耗</td><td>${cf.irrigationEmission?.toFixed(1) || '-'}</td><td>${cf.totalEmission ? ((cf.irrigationEmission / cf.totalEmission) * 100).toFixed(1) : '-'}%</td></tr>
+      <tr><td>土壤排放</td><td>${cf.soilEmission?.toFixed(1) || '-'}</td><td>${cf.totalEmission ? ((cf.soilEmission / cf.totalEmission) * 100).toFixed(1) : '-'}%</td></tr>
+      <tr style="font-weight:600;background:#f0f7ea;"><td>总排放量</td><td>${cf.totalEmission?.toFixed(1) || '-'}</td><td>100%</td></tr>
+      <tr><td>单位产量排放</td><td colspan="2">${cf.perUnitYield?.toFixed(3) || '-'} kg CO₂e / t 产量</td></tr>
+    </tbody>
+  </table>
+</div>
+<div class="footer">
+  <p>本报告由作物生长模拟系统自动生成 | 仅供科研和生产决策参考</p>
+  <p>Report ID: ${report.id}</p>
+</div>
+</body>
+</html>`;
+  fs.writeFileSync(filePath, html, 'utf-8');
+  execute(`UPDATE reports SET pdf_url = ? WHERE id = ?`, [pdfUrl, reportId]);
+  return { success: true, pdfUrl };
 }
 
 export function createAlert(input: Omit<Alert, 'id' | 'status' | 'reviewedBy' | 'reviewNote' | 'createdAt'>): Alert {

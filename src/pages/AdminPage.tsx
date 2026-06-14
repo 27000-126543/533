@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import type { Variety, User, AdjustmentLog, Approval } from '@@/shared/types';
 import { formatNumber, formatDate, roleLabel } from '@/utils/format';
+import useAppStore from '@/store/appStore';
 
 type TabKey = 'varieties' | 'users' | 'notifications' | 'logs';
 type LogTabKey = 'adjustment' | 'approval' | 'system';
@@ -127,10 +128,14 @@ export default function AdminPage() {
         const res = await fetch('/api/users');
         if (res.ok) {
           const json = await res.json();
-          if (json.success) setUsers(json.data || mockUsers());
-          else setUsers(mockUsers());
+          if (json.success) setUsers(json.data || []);
+          else {
+            setUsers([]);
+            alert(json.error || '加载用户列表失败');
+          }
         } else {
-          setUsers(mockUsers());
+          setUsers([]);
+          alert('加载用户列表失败，服务器错误');
         }
       } else if (activeTab === 'logs') {
         const [adjRes, appRes] = await Promise.all([
@@ -200,25 +205,42 @@ export default function AdminPage() {
     }
   }
 
+  const currentUser = useAppStore((s) => s.currentUser);
+  const isAdmin = currentUser?.role === 'admin';
+  const addNotification = useAppStore((s) => s.addNotification);
+
   async function toggleUserActive(u: User) {
+    if (!isAdmin) {
+      alert('无权限操作');
+      return;
+    }
     if (!confirm(u.active ? `确认禁用用户「${u.username}」？` : `确认启用用户「${u.username}」？`)) return;
     setTogglingId(u.id);
     try {
-      const res = await fetch(`/api/users/${u.id}`, {
+      const res = await fetch(`/api/users/${u.id}/active`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ active: !u.active }),
+        body: JSON.stringify({ active: !u.active, operatorId: currentUser?.id }),
       });
-      if (res.ok) {
-        const json = await res.json();
-        if (json.success) {
-          setUsers((prev) => prev.map((x) => (x.id === u.id ? json.data : x)));
+      const json = await res.json().catch(() => ({ success: false, error: '服务器无响应' }));
+      if (res.ok && json.success) {
+        const listRes = await fetch('/api/users');
+        if (listRes.ok) {
+          const listJson = await listRes.json();
+          if (listJson.success) {
+            setUsers(listJson.data || []);
+          }
         }
+        addNotification({ type: 'success', message: `用户「${u.username}」已${u.active ? '禁用' : '启用'}` });
+      } else {
+        const errMsg = json.error || '操作失败';
+        alert(errMsg);
+        addNotification({ type: 'error', message: errMsg });
       }
-    } catch {
-      setUsers((prev) =>
-        prev.map((x) => (x.id === u.id ? { ...x, active: !x.active } : x))
-      );
+    } catch (e: any) {
+      const errMsg = e?.message || '网络错误，操作失败';
+      alert(errMsg);
+      addNotification({ type: 'error', message: errMsg });
     } finally {
       setTogglingId(null);
     }
@@ -434,10 +456,10 @@ export default function AdminPage() {
                           </td>
                           <td className="table-cell text-center">
                             <button
-                              className="p-2 rounded-lg transition-colors disabled:opacity-50"
+                              className="p-2 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                               onClick={() => toggleUserActive(u)}
-                              disabled={togglingId === u.id}
-                              title={u.active ? '点击禁用' : '点击启用'}
+                              disabled={togglingId === u.id || !isAdmin}
+                              title={!isAdmin ? '无权限操作' : u.active ? '点击禁用' : '点击启用'}
                             >
                               {togglingId === u.id ? (
                                 <span className="w-5 h-5 border-2 border-agri-600 border-t-transparent rounded-full animate-spin inline-block" />

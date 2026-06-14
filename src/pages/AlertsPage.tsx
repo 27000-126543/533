@@ -136,6 +136,48 @@ export default function AlertsPage() {
     }
   }
 
+  async function refreshAlerts() {
+    try {
+      const res = await fetch('/api/alerts');
+      if (res.ok) {
+        const json = await res.json();
+        if (json.success) {
+          setAlerts(json.data || mockAlerts());
+          if (selectedAlert) {
+            const updated = (json.data || mockAlerts()).find((a: Alert) => a.id === selectedAlert.id);
+            if (updated) setSelectedAlert(updated);
+          }
+        }
+      }
+    } catch {}
+  }
+
+  async function refreshAdjustmentLogs() {
+    try {
+      const res = await fetch('/api/adjustment-logs');
+      if (res.ok) {
+        const json = await res.json();
+        if (json.success) setAdjustmentLogs(json.data || mockAdjustmentLogs());
+      }
+    } catch {}
+  }
+
+  async function refreshApprovals() {
+    try {
+      const res = await fetch('/api/approvals');
+      if (res.ok) {
+        const json = await res.json();
+        if (json.success) {
+          setApprovals(json.data || mockApprovals());
+          if (selectedApproval) {
+            const updated = (json.data || mockApprovals()).find((a: Approval) => a.id === selectedApproval.id);
+            if (updated) setSelectedApproval(updated);
+          }
+        }
+      }
+    } catch {}
+  }
+
   function mockAlerts(): Alert[] {
     const base = new Date('2024-06-01T08:00:00').getTime();
     return [
@@ -357,18 +399,19 @@ export default function AlertsPage() {
   function handleSelectAlert(alert: Alert) {
     setSelectedAlert(alert);
     setReviewNote(alert.reviewNote || '');
-    setShowAdjustmentPreview(alert.status === 'reviewed' || alert.status === 'adjusted');
+    setShowAdjustmentPreview(alert.status === 'adjusted');
   }
 
   async function handleReview(action: 'approve' | 'reject') {
     if (!selectedAlert) return;
     try {
       setReviewSubmitting(true);
+      const approved = action === 'approve';
       const res = await fetch(`/api/alerts/${selectedAlert.id}/review`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          action,
+          approved,
           note: reviewNote,
         }),
       });
@@ -376,8 +419,10 @@ export default function AlertsPage() {
         const json = await res.json();
         if (json.success) {
           updateAlertLocally(selectedAlert.id, json.data);
-          if (action === 'approve') {
+          if (approved) {
             setShowAdjustmentPreview(true);
+          } else {
+            setShowAdjustmentPreview(false);
           }
         } else {
           mockUpdateAlert(selectedAlert.id, action);
@@ -385,6 +430,7 @@ export default function AlertsPage() {
       } else {
         mockUpdateAlert(selectedAlert.id, action);
       }
+      await Promise.all([refreshAlerts(), refreshAdjustmentLogs()]);
     } catch {
       mockUpdateAlert(selectedAlert.id, action);
     } finally {
@@ -393,7 +439,7 @@ export default function AlertsPage() {
   }
 
   function mockUpdateAlert(id: string, action: 'approve' | 'reject') {
-    const newStatus: AlertStatus = action === 'approve' ? 'reviewed' : 'dismissed';
+    const newStatus: AlertStatus = action === 'approve' ? 'adjusted' : 'dismissed';
     const updated: Alert = {
       ...selectedAlert!,
       status: newStatus,
@@ -404,6 +450,8 @@ export default function AlertsPage() {
     updateAlertLocally(id, updated);
     if (action === 'approve') {
       setShowAdjustmentPreview(true);
+    } else {
+      setShowAdjustmentPreview(false);
     }
   }
 
@@ -420,7 +468,7 @@ export default function AlertsPage() {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          action,
+          approved: action === 'approve',
           comment: approvalComment,
         }),
       });
@@ -434,6 +482,7 @@ export default function AlertsPage() {
       } else {
         mockUpdateApproval(selectedApproval.id, action);
       }
+      await refreshApprovals();
     } catch {
       mockUpdateApproval(selectedApproval.id, action);
     } finally {
@@ -770,13 +819,13 @@ export default function AlertsPage() {
                           {selectedAlert.status === 'reviewed' && (
                             <span className="badge bg-blue-100 text-blue-800">
                               <CheckSquare className="w-3.5 h-3.5 mr-1" />
-                              已复核通过，等待生成调整方案
+                              已复核
                             </span>
                           )}
                           {selectedAlert.status === 'adjusted' && (
                             <span className="badge bg-emerald-100 text-emerald-800">
                               <CheckCircle className="w-3.5 h-3.5 mr-1" />
-                              已完成调整
+                              已调整
                             </span>
                           )}
                           {selectedAlert.status === 'dismissed' && (
@@ -880,7 +929,7 @@ export default function AlertsPage() {
                     </div>
                   )}
 
-                  {selectedAlertLogs.length > 0 && (
+                  {selectedAlert.status !== 'dismissed' && selectedAlertLogs.length > 0 && (
                     <div className="card p-6 animate-fade-in">
                       <h2 className="section-title !mb-4">
                         <Clock className="w-5 h-5 text-soil-600" />

@@ -43,6 +43,7 @@ import type {
   FertilizerApplication,
 } from '@@/shared/types';
 import { formatNumber, formatDate, statusLabel, statusColor } from '@/utils/format';
+import useAppStore from '@/store/appStore';
 
 const STATUS_ORDER: SimulationStatus[] = [
   'pending_validation',
@@ -160,6 +161,8 @@ export default function SimulationCenter() {
   const [advancingId, setAdvancingId] = useState<string | null>(null);
   const [taskName, setTaskName] = useState('');
   const [creating, setCreating] = useState(false);
+  const [deleteErrorModal, setDeleteErrorModal] = useState<{ open: boolean; message: string }>({ open: false, message: '' });
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -527,15 +530,44 @@ export default function SimulationCenter() {
     setTimeout(doOnce, 400);
   }
 
+  const addNotification = useAppStore((s) => s.addNotification);
+
   async function deleteTask(id: string) {
-    if (!confirm('确认删除该模拟任务？')) return;
+    const task = simulations.find((s) => s.id === id);
+    if (!task) return;
+    const stageLabel: Record<SimulationStatus, string> = {
+      pending_validation: '待校验',
+      parsing: '参数解析',
+      initializing: '模型初始化',
+      crop_growth: '作物生长',
+      soil_process: '土壤过程',
+      nitrogen_cycle: '氮循环',
+      completed: '已完成',
+      error_rollback: '异常回退',
+    };
+    const confirmMsg = `确认删除模拟任务「${task.name}」？\n\n当前阶段：${stageLabel[task.status]} (进度 ${task.progress}%)\n品种：${task.varietyName || '未指定'}\n创建者：${task.creatorName || '未知'}\n\n此操作不可恢复！`;
+    if (!confirm(confirmMsg)) return;
+
+    setDeletingId(id);
     try {
-      await fetch(`/api/simulations/${id}`, { method: 'DELETE' });
-    } catch {
-      // 静默处理：本地状态仍需要更新
+      const res = await fetch(`/api/simulations/${id}`, { method: 'DELETE' });
+      const json = await res.json().catch(() => ({ success: false, error: '服务器无响应' }));
+      if (res.ok && json.success) {
+        setSimulations((prev) => prev.filter((s) => s.id !== id));
+        if (selectedTask?.id === id) setSelectedTask(null);
+        addNotification({ type: 'success', message: `任务「${task.name}」已成功删除` });
+      } else {
+        const errMsg = json.error || '删除失败';
+        setDeleteErrorModal({ open: true, message: errMsg });
+        addNotification({ type: 'error', message: errMsg });
+      }
+    } catch (e: any) {
+      const errMsg = e?.message || '网络错误，删除失败';
+      setDeleteErrorModal({ open: true, message: errMsg });
+      addNotification({ type: 'error', message: errMsg });
+    } finally {
+      setDeletingId(null);
     }
-    setSimulations((prev) => prev.filter((s) => s.id !== id));
-    if (selectedTask?.id === id) setSelectedTask(null);
   }
 
   function closeUpload() {
@@ -1199,11 +1231,18 @@ export default function SimulationCenter() {
                                 <PlayCircle className="w-4 h-4" />
                               </button>
                               <button
-                                className="p-1.5 rounded-lg text-soil-500 hover:bg-red-50 hover:text-red-600 transition-colors"
+                                className={`p-1.5 rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+                                  deletingId === task.id ? 'animate-pulse bg-red-50' : 'text-soil-500 hover:bg-red-50 hover:text-red-600'
+                                }`}
                                 onClick={() => deleteTask(task.id)}
-                                title="删除"
+                                disabled={deletingId === task.id}
+                                title={deletingId === task.id ? '正在删除...' : '删除'}
                               >
-                                <Trash2 className="w-4 h-4" />
+                                {deletingId === task.id ? (
+                                  <span className="w-4 h-4 border-2 border-red-500 border-t-transparent rounded-full animate-spin inline-block" />
+                                ) : (
+                                  <Trash2 className="w-4 h-4" />
+                                )}
                               </button>
                             </div>
                           </td>
@@ -1235,6 +1274,35 @@ export default function SimulationCenter() {
           )}
         </div>
       </div>
+
+      {deleteErrorModal.open && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center animate-fade-in" onClick={() => setDeleteErrorModal({ open: false, message: '' })}>
+          <div
+            className="bg-white rounded-2xl shadow-2xl max-w-md w-full mx-4 animate-fade-in animate-slide-up"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="p-6">
+              <div className="flex items-start gap-4">
+                <div className="w-12 h-12 rounded-full bg-red-50 flex items-center justify-center flex-shrink-0">
+                  <AlertCircle className="w-6 h-6 text-red-500" />
+                </div>
+                <div className="flex-1">
+                  <h3 className="font-semibold text-lg text-soil-800 mb-2">删除失败</h3>
+                  <p className="text-sm text-soil-600 whitespace-pre-line">{deleteErrorModal.message}</p>
+                </div>
+              </div>
+            </div>
+            <div className="px-6 pb-6 flex justify-end">
+              <button
+                className="btn-primary"
+                onClick={() => setDeleteErrorModal({ open: false, message: '' })}
+              >
+                我知道了
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

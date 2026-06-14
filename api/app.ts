@@ -34,6 +34,11 @@ initDatabase().then(() => {
 })
 
 /**
+ * Static files for reports
+ */
+app.use('/data/reports', express.static(path.join(__dirname, '..', 'data', 'reports')))
+
+/**
  * API Routes
  */
 app.use('/api/auth', authRoutes)

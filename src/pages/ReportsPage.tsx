@@ -36,6 +36,7 @@ import {
 } from 'recharts';
 import type { Report, Variety, DataPoint, BiomassDataPoint, NitrogenBalance, CarbonFootprint } from '@@/shared/types';
 import { formatNumber, formatDate } from '@/utils/format';
+import useAppStore from '@/store/appStore';
 
 const MOCK_LAI_SERIES: DataPoint[] = [
   { time: 'D0', value: 0.1 }, { time: 'D10', value: 0.5 }, { time: 'D20', value: 1.2 },
@@ -114,6 +115,8 @@ export default function ReportsPage() {
   const [exportStage, setExportStage] = useState<string>('');
   const [exporting, setExporting] = useState(false);
 
+  const addNotification = useAppStore((s) => s.addNotification);
+
   useEffect(() => {
     loadData();
   }, []);
@@ -131,25 +134,25 @@ export default function ReportsPage() {
 
       if (repRes.ok) {
         const json = await repRes.json();
-        if (json.success) reportsData = json.data || mockReports();
-        else reportsData = mockReports();
+        if (json.success) reportsData = json.data || [];
+        else {
+          alert(json.error || '加载报告列表失败');
+        }
       } else {
-        reportsData = mockReports();
+        alert('加载报告列表失败，服务器错误');
       }
 
       if (varRes.ok) {
         const json = await varRes.json();
-        if (json.success) varietiesData = json.data || mockVarieties();
-        else varietiesData = mockVarieties();
-      } else {
-        varietiesData = mockVarieties();
+        if (json.success) varietiesData = json.data || [];
       }
 
       setReports(reportsData);
       setVarieties(varietiesData);
-    } catch {
-      setReports(mockReports());
-      setVarieties(mockVarieties());
+    } catch (e: any) {
+      const errMsg = e?.message || '网络错误，加载失败';
+      alert(errMsg);
+      addNotification({ type: 'error', message: errMsg });
     } finally {
       setLoading(false);
     }
@@ -276,27 +279,45 @@ export default function ReportsPage() {
     setGeneratingPdf(reportId);
     try {
       const res = await fetch(`/api/reports/${reportId}/pdf`, { method: 'POST' });
-      if (res.ok) {
-        const json = await res.json();
-        if (json.success) {
-          setReports((prev) =>
-            prev.map((r) =>
-              r.id === reportId ? { ...r, pdfUrl: json.data.pdfUrl || `/reports/${reportId}.pdf` } : r
-            )
-          );
-          if (selectedReport?.id === reportId) {
-            setSelectedReport((prev) => prev ? { ...prev, pdfUrl: json.data.pdfUrl || `/reports/${reportId}.pdf` } : null);
-          }
+      const json = await res.json().catch(() => ({ success: false, error: '服务器无响应' }));
+      if (res.ok && json.success && json.data?.pdfUrl) {
+        const pdfUrl = json.data.pdfUrl;
+        setReports((prev) =>
+          prev.map((r) => (r.id === reportId ? { ...r, pdfUrl } : r))
+        );
+        if (selectedReport?.id === reportId) {
+          setSelectedReport((prev) => (prev ? { ...prev, pdfUrl } : null));
         }
+        addNotification({ type: 'success', message: 'PDF 生成成功，现在可以下载了' });
+      } else {
+        const errMsg = json.error || 'PDF 生成失败';
+        alert(errMsg);
+        addNotification({ type: 'error', message: errMsg });
       }
+    } catch (e: any) {
+      const errMsg = e?.message || '网络错误，PDF 生成失败';
+      alert(errMsg);
+      addNotification({ type: 'error', message: errMsg });
     } finally {
       setGeneratingPdf(null);
     }
   }
 
   function handleDownload(report: Report) {
-    if (report.pdfUrl) {
-      window.open(report.pdfUrl, '_blank');
+    if (!report.pdfUrl) return;
+    try {
+      const a = document.createElement('a');
+      a.href = report.pdfUrl;
+      a.download = `${report.simulationName || 'report'}_${report.id}.pdf`;
+      a.target = '_blank';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      addNotification({ type: 'success', message: 'PDF 下载已开始' });
+    } catch (e: any) {
+      const errMsg = e?.message || '下载失败';
+      alert(errMsg);
+      addNotification({ type: 'error', message: errMsg });
     }
   }
 
@@ -308,7 +329,10 @@ export default function ReportsPage() {
       if (exportTreatment) params.append('treatment', exportTreatment);
       if (exportStage) params.append('stage', exportStage);
 
-      const res = await fetch(`/api/reports/export?${params.toString()}`);
+      addNotification({ type: 'info', message: '正在导出数据...' });
+
+      const queryString = params.toString();
+      const res = await fetch(`/api/reports/export${queryString ? `?${queryString}` : ''}`);
       if (res.ok) {
         const blob = await res.blob();
         const url = window.URL.createObjectURL(blob);
@@ -317,16 +341,22 @@ export default function ReportsPage() {
         a.download = `reports_export_${new Date().toISOString().slice(0, 10)}.csv`;
         a.click();
         window.URL.revokeObjectURL(url);
+        addNotification({ type: 'success', message: '数据导出成功' });
+      } else {
+        let errMsg = '导出失败';
+        try {
+          const json = await res.json();
+          errMsg = json.error || `导出失败 (HTTP ${res.status})`;
+        } catch {
+          errMsg = `导出失败 (HTTP ${res.status})`;
+        }
+        alert(errMsg);
+        addNotification({ type: 'error', message: errMsg });
       }
-    } catch {
-      const csvContent = generateMockCsv();
-      const blob = new Blob(['\ufeff' + csvContent], { type: 'text/csv;charset=utf-8;' });
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `reports_export_${new Date().toISOString().slice(0, 10)}.csv`;
-      a.click();
-      window.URL.revokeObjectURL(url);
+    } catch (e: any) {
+      const errMsg = e?.message || '网络错误，导出失败';
+      alert(errMsg);
+      addNotification({ type: 'error', message: errMsg });
     } finally {
       setExporting(false);
     }

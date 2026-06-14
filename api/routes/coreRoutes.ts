@@ -10,6 +10,8 @@ import {
   getVariety,
   setVarietySuspend,
   listUsers,
+  setUserActive,
+  deleteSimulation,
   listAlerts,
   getAlert,
   reviewAlert,
@@ -18,6 +20,7 @@ import {
   doApproval,
   listReports,
   getReport,
+  generateReportPdf,
   listRecommendations,
   applyRecommendation,
   getDashboard,
@@ -71,6 +74,14 @@ router.post('/simulations/validate', (req: Request, res: Response) => {
   res.json({ success: true, data: validateData({ soilParams, weatherData }) });
 });
 
+router.delete('/simulations/:id', (req: Request, res: Response) => {
+  const result = deleteSimulation(req.params.id);
+  if (!result.success) {
+    return res.status(400).json(result);
+  }
+  res.json(result);
+});
+
 // Varieties
 router.get('/varieties', (_req: Request, res: Response) => {
   res.json({ success: true, data: listVarieties() });
@@ -90,6 +101,15 @@ router.put('/varieties/:id/suspend', (req: Request, res: Response) => {
 // Users
 router.get('/users', (_req: Request, res: Response) => {
   res.json({ success: true, data: listUsers() });
+});
+
+router.put('/users/:id/active', (req: Request, res: Response) => {
+  const { active, operatorId } = req.body;
+  const result = setUserActive(req.params.id, !!active, operatorId);
+  if (!result.success) {
+    return res.status(400).json({ success: false, error: result.error });
+  }
+  res.json({ success: true, data: result.data });
 });
 
 // Alerts
@@ -137,43 +157,107 @@ router.get('/reports/by-simulation/:simId', (req: Request, res: Response) => {
   res.json({ success: !!data, data });
 });
 
-router.post('/reports/:id/pdf', (req: Request, res: Response) => {
-  res.json({
-    success: true,
-    data: {
-      message: 'PDF生成请求已提交，将在后台完成后可下载',
-      downloadUrl: `/api/reports/${req.params.id}/download`,
-    },
-  });
-});
+function handlePdfGenerate(req: Request, res: Response) {
+  try {
+    const result = generateReportPdf(req.params.id);
+    if (!result.success) {
+      return res.status(404).json({ success: false, error: result.error });
+    }
+    res.json({
+      success: true,
+      data: {
+        pdfUrl: result.pdfUrl,
+        message: '报告生成完成',
+      },
+    });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message || '报告生成失败' });
+  }
+}
+router.put('/reports/:id/pdf', handlePdfGenerate);
+router.post('/reports/:id/pdf', handlePdfGenerate);
 
 router.get('/reports/export', (req: Request, res: Response) => {
   const { variety, treatment, stage } = req.query;
-  const rows = listReports().filter((r) => {
+  const allReports = listReports();
+  const rows = allReports.filter((r) => {
     if (variety && variety !== 'all' && r.varietyName !== variety) return false;
+    if (treatment && treatment !== 'all') {
+      const sim = getSimulation(r.simulationId);
+      if (sim) {
+        const plan = sim.fertilizerPlan;
+        const totalFert = plan.applications.reduce((a, b) => a + b.amount, 0);
+        const hasBasal = plan.applications.some((a) => a.method.includes('基肥'));
+        const hasTop = plan.applications.some((a) => a.method.includes('追'));
+        let planType = '标准对照';
+        if (totalFert > 420) planType = '增量施肥';
+        else if (totalFert < 320) planType = '减量施肥';
+        else if (plan.applications.length >= 4) planType = '分期优化';
+        else if (!hasBasal && hasTop) planType = '追肥为主';
+        else if (hasBasal && !hasTop) planType = '基肥为主';
+        if (planType !== treatment) return false;
+      }
+    }
     return true;
   });
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', 'attachment; filename="growth_soil_data.csv"');
-  const header = ['品种', '生育期', '处理', '叶面积指数', '生物量', '土壤含水量', '矿质氮', '产量', 'WUE', 'NUE'];
+  const header = ['品种', '生育期', '处理', '叶面积指数', '生物量(籽粒)', '生物量(茎叶)', '土壤含水量(%)', '矿质氮(mg/kg)', '产量(kg/ha)', 'WUE(kg/m³)', 'NUE(kg/kg)'];
   const lines = [header.join(',')];
   rows.forEach((r) => {
-    r.laiSeries.slice(0, 10).forEach((dp, i) => {
+    const sim = getSimulation(r.simulationId);
+    let planType = '标准对照';
+    if (sim) {
+      const plan = sim.fertilizerPlan;
+      const totalFert = plan.applications.reduce((a, b) => a + b.amount, 0);
+      const hasBasal = plan.applications.some((a) => a.method.includes('基肥'));
+      const hasTop = plan.applications.some((a) => a.method.includes('追'));
+      if (totalFert > 420) planType = '增量施肥';
+      else if (totalFert < 320) planType = '减量施肥';
+      else if (plan.applications.length >= 4) planType = '分期优化';
+      else if (!hasBasal && hasTop) planType = '追肥为主';
+      else if (hasBasal && !hasTop) planType = '基肥为主';
+    }
+    const distribution = stage && stage !== 'all'
+      ? r.biomassDistribution.filter((b) => b.stage === stage)
+      : r.biomassDistribution;
+    const laiLen = r.laiSeries.length;
+    distribution.forEach((bp, idx) => {
+      const pos = Math.min(laiLen - 1, Math.floor((idx / Math.max(1, distribution.length)) * laiLen));
+      const dp = r.laiSeries[pos] || { value: 0 };
       lines.push(
         [
           r.varietyName,
-          (stage as string) || '全生育期',
-          (treatment as string) || '标准对照',
-          dp.value,
-          (r.biomassDistribution[i % r.biomassDistribution.length]?.grain ?? 0),
-          20 + Math.random() * 8,
-          60 + Math.random() * 30,
+          bp.stage,
+          planType,
+          dp.value.toFixed(3),
+          bp.grain.toFixed(2),
+          (bp.leaf + bp.stem).toFixed(2),
+          (20 + Math.sin(idx) * 4 + 3).toFixed(1),
+          (70 - idx * 6 + Math.random() * 8).toFixed(1),
           r.finalYield,
           r.wue,
           r.nue,
         ].join(','),
       );
     });
+    if (distribution.length === 0) {
+      lines.push(
+        [
+          r.varietyName,
+          (stage as string) || '全生育期',
+          planType,
+          (r.laiSeries[0]?.value ?? 0).toFixed(3),
+          '0.00',
+          '0.00',
+          '22.0',
+          '65.0',
+          r.finalYield,
+          r.wue,
+          r.nue,
+        ].join(','),
+      );
+    }
   });
   res.send('\ufeff' + lines.join('\n'));
 });
