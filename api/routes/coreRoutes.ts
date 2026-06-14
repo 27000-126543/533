@@ -26,7 +26,94 @@ import {
   getDashboard,
   detectFertilizerTreatment,
 } from '../services/coreService.js';
-import type { SoilParams, WeatherRecord, SimulationStatus } from '../../shared/types.js';
+import type { SoilParams, WeatherRecord, SimulationStatus, Report } from '../../shared/types.js';
+
+function seededRandom(seed: number): number {
+  const x = Math.sin(seed) * 10000;
+  return x - Math.floor(x);
+}
+
+interface ExportDataRow {
+  variety: string;
+  stage: string;
+  treatment: string;
+  lai: number;
+  biomassGrain: number;
+  biomassStem: number;
+  soilMoisture: number;
+  mineralN: number;
+  yield: number;
+  wue: number;
+  nue: number;
+}
+
+const EXPORT_HEADERS = [
+  '品种', '生育期', '施肥处理', '叶面积指数', 
+  '生物量(籽粒)', '生物量(茎叶)', 
+  '土壤含水量(%)', '矿质氮(mg/kg)', 
+  '产量(kg/ha)', 'WUE(kg/m³)', 'NUE(kg/kg)'
+];
+
+function generateExportRows(
+  allReports: Report[],
+  variety: string | undefined,
+  treatment: string | undefined,
+  stage: string | undefined,
+): { headers: string[]; rows: ExportDataRow[]; matchedReports: number } {
+  const reportTreatments = new Map<string, string>();
+  allReports.forEach((r) => {
+    const sim = getSimulation(r.simulationId);
+    if (sim) {
+      reportTreatments.set(r.id, detectFertilizerTreatment(sim.fertilizerPlan));
+    }
+  });
+
+  const filteredReports = allReports.filter((r) => {
+    if (variety && variety !== 'all' && r.varietyName !== variety) return false;
+    if (treatment && treatment !== 'all') {
+      const planType = reportTreatments.get(r.id);
+      if (planType !== treatment) return false;
+    }
+    if (stage && stage !== 'all') {
+      const hasStage = r.biomassDistribution.some((b) => b.stage === stage);
+      if (!hasStage) return false;
+    }
+    return true;
+  });
+
+  const rows: ExportDataRow[] = [];
+  filteredReports.forEach((r, reportIdx) => {
+    const planType = reportTreatments.get(r.id) || '常规施肥';
+    const distribution = stage && stage !== 'all'
+      ? r.biomassDistribution.filter((b) => b.stage === stage)
+      : r.biomassDistribution;
+    const laiLen = r.laiSeries.length;
+    distribution.forEach((bp, idx) => {
+      const pos = Math.min(laiLen - 1, Math.floor((idx / Math.max(1, distribution.length)) * laiLen));
+      const dp = r.laiSeries[pos] || { value: 0 };
+      const seed = reportIdx * 100 + idx;
+      rows.push({
+        variety: r.varietyName,
+        stage: bp.stage,
+        treatment: planType,
+        lai: +dp.value.toFixed(3),
+        biomassGrain: +bp.grain.toFixed(2),
+        biomassStem: +(bp.leaf + bp.stem).toFixed(2),
+        soilMoisture: +(20 + Math.sin(idx) * 4 + 3).toFixed(1),
+        mineralN: +(70 - idx * 6 + seededRandom(seed) * 8).toFixed(1),
+        yield: r.finalYield,
+        wue: r.wue,
+        nue: r.nue,
+      });
+    });
+  });
+
+  return {
+    headers: EXPORT_HEADERS,
+    rows,
+    matchedReports: filteredReports.length,
+  };
+}
 
 const router = Router();
 
@@ -178,62 +265,52 @@ async function handlePdfGenerate(req: Request, res: Response) {
 router.put('/reports/:id/pdf', handlePdfGenerate);
 router.post('/reports/:id/pdf', handlePdfGenerate);
 
+router.get('/reports/export/data', (req: Request, res: Response) => {
+  const { variety, treatment, stage } = req.query;
+  const allReports = listReports();
+  const result = generateExportRows(
+    allReports,
+    variety as string | undefined,
+    treatment as string | undefined,
+    stage as string | undefined,
+  );
+
+  res.json({
+    success: true,
+    data: {
+      headers: result.headers,
+      rows: result.rows,
+      totalRows: result.rows.length,
+      matchedReports: result.matchedReports,
+    },
+  });
+});
+
 router.get('/reports/export', (req: Request, res: Response) => {
   const { variety, treatment, stage } = req.query;
   const allReports = listReports();
-
-  const reportTreatments = new Map<string, string>();
-  allReports.forEach((r) => {
-    const sim = getSimulation(r.simulationId);
-    if (sim) {
-      reportTreatments.set(r.id, detectFertilizerTreatment(sim.fertilizerPlan));
-    }
-  });
-
-  const rows = allReports.filter((r) => {
-    if (variety && variety !== 'all' && r.varietyName !== variety) return false;
-    if (treatment && treatment !== 'all') {
-      const planType = reportTreatments.get(r.id);
-      if (planType !== treatment) return false;
-    }
-    if (stage && stage !== 'all') {
-      const hasStage = r.biomassDistribution.some((b) => b.stage === stage);
-      if (!hasStage) return false;
-    }
-    return true;
-  });
+  const result = generateExportRows(
+    allReports,
+    variety as string | undefined,
+    treatment as string | undefined,
+    stage as string | undefined,
+  );
 
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', 'attachment; filename="growth_soil_data.csv"');
-  res.setHeader('X-Total-Count', String(rows.length));
-  res.setHeader('X-Has-Data', rows.length > 0 ? 'true' : 'false');
-  const header = ['品种', '生育期', '处理', '叶面积指数', '生物量(籽粒)', '生物量(茎叶)', '土壤含水量(%)', '矿质氮(mg/kg)', '产量(kg/ha)', 'WUE(kg/m³)', 'NUE(kg/kg)'];
-  const lines = [header.join(',')];
-  rows.forEach((r) => {
-    const planType = reportTreatments.get(r.id) || '常规施肥';
-    const distribution = stage && stage !== 'all'
-      ? r.biomassDistribution.filter((b) => b.stage === stage)
-      : r.biomassDistribution;
-    const laiLen = r.laiSeries.length;
-    distribution.forEach((bp, idx) => {
-      const pos = Math.min(laiLen - 1, Math.floor((idx / Math.max(1, distribution.length)) * laiLen));
-      const dp = r.laiSeries[pos] || { value: 0 };
-      lines.push(
-        [
-          r.varietyName,
-          bp.stage,
-          planType,
-          dp.value.toFixed(3),
-          bp.grain.toFixed(2),
-          (bp.leaf + bp.stem).toFixed(2),
-          (20 + Math.sin(idx) * 4 + 3).toFixed(1),
-          (70 - idx * 6 + Math.random() * 8).toFixed(1),
-          r.finalYield,
-          r.wue,
-          r.nue,
-        ].join(','),
-      );
-    });
+  res.setHeader('X-Total-Count', String(result.rows.length));
+  res.setHeader('X-Has-Data', result.rows.length > 0 ? 'true' : 'false');
+  const lines = [result.headers.join(',')];
+  result.rows.forEach((row) => {
+    lines.push([
+      row.variety, row.stage, row.treatment,
+      row.lai.toFixed(3),
+      row.biomassGrain.toFixed(2),
+      row.biomassStem.toFixed(2),
+      row.soilMoisture.toFixed(1),
+      row.mineralN.toFixed(1),
+      row.yield, row.wue, row.nue,
+    ].join(','));
   });
   res.send('\ufeff' + lines.join('\n'));
 });

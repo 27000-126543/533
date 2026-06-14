@@ -115,12 +115,18 @@ export default function ReportsPage() {
   const [exportTreatment, setExportTreatment] = useState<string>('');
   const [exportStage, setExportStage] = useState<string>('');
   const [exporting, setExporting] = useState(false);
+  const [exportData, setExportData] = useState<ExportDataResponse | null>(null);
+  const [exportDataLoading, setExportDataLoading] = useState(false);
 
   const addNotification = useAppStore((s) => s.addNotification);
 
   useEffect(() => {
     loadData();
   }, []);
+
+  useEffect(() => {
+    loadExportData();
+  }, [exportVariety, exportTreatment, exportStage]);
 
   async function loadData() {
     try {
@@ -164,6 +170,34 @@ export default function ReportsPage() {
       addNotification({ type: 'error', message: errMsg });
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function loadExportData() {
+    setExportDataLoading(true);
+    try {
+      const params = new URLSearchParams();
+      if (exportVariety) params.append('variety', exportVariety);
+      if (exportTreatment) params.append('treatment', exportTreatment);
+      if (exportStage) params.append('stage', exportStage);
+      
+      const queryString = params.toString();
+      const res = await fetch(`/api/reports/export/data${queryString ? `?${queryString}` : ''}`);
+      if (res.ok) {
+        const json = await res.json();
+        if (json.success) {
+          setExportData(json.data);
+        } else {
+          setExportData(null);
+        }
+      } else {
+        setExportData(null);
+      }
+    } catch (e) {
+      console.error('Failed to load export data', e);
+      setExportData(null);
+    } finally {
+      setExportDataLoading(false);
     }
   }
 
@@ -303,7 +337,7 @@ export default function ReportsPage() {
     return list;
   }, [reports, simulations, exportVariety, exportTreatment, exportStage]);
 
-  interface ExportRow {
+  interface ExportDataRow {
     variety: string;
     stage: string;
     treatment: string;
@@ -315,59 +349,14 @@ export default function ReportsPage() {
     yield: number;
     wue: number;
     nue: number;
-    simulationName: string;
   }
 
-  const exportPreviewRows = useMemo<ExportRow[]>(() => {
-    const rows: ExportRow[] = [];
-
-    for (const report of exportFilteredReports) {
-      const sim = simulations.find((s) => s.id === report.simulationId);
-      const treatment = sim ? detectFertilizerTreatment(sim.fertilizerPlan) : '常规施肥';
-
-      let stagesToProcess: string[] = [];
-      if (exportStage && exportStage !== '全生育期') {
-        stagesToProcess = [exportStage];
-      } else {
-        stagesToProcess = report.biomassDistribution.map((b) => b.stage);
-      }
-
-      for (let i = 0; i < stagesToProcess.length; i++) {
-        const stage = stagesToProcess[i];
-        const biomassData = report.biomassDistribution.find((b) => b.stage === stage);
-        if (!biomassData) continue;
-
-        const laiIndex = Math.min(
-          Math.floor((i / Math.max(stagesToProcess.length - 1, 1)) * (report.laiSeries.length - 1)),
-          report.laiSeries.length - 1
-        );
-        const lai = report.laiSeries[laiIndex]?.value || 0;
-
-        const biomassGrain = biomassData.grain;
-        const biomassStem = biomassData.leaf + biomassData.stem;
-
-        const soilMoisture = 20 + Math.sin(i) * 4;
-        const mineralN = 70 - i * 6 + (Math.random() - 0.5) * 2;
-
-        rows.push({
-          variety: report.varietyName,
-          stage,
-          treatment,
-          lai,
-          biomassGrain,
-          biomassStem,
-          soilMoisture,
-          mineralN,
-          yield: report.finalYield,
-          wue: report.wue,
-          nue: report.nue,
-          simulationName: report.simulationName,
-        });
-      }
-    }
-
-    return rows;
-  }, [exportFilteredReports, simulations, exportStage]);
+  interface ExportDataResponse {
+    headers: string[];
+    rows: ExportDataRow[];
+    totalRows: number;
+    matchedReports: number;
+  }
 
   async function handlePreview(report: Report) {
     try {
@@ -434,7 +423,7 @@ export default function ReportsPage() {
   }
 
   async function handleExport() {
-    if (exportPreviewRows.length === 0) {
+    if (exportData?.totalRows === 0) {
       const confirmed = window.confirm('当前筛选条件下无匹配数据，将导出仅含表头的空文件，是否继续？');
       if (!confirmed) return;
     }
@@ -458,7 +447,7 @@ export default function ReportsPage() {
         a.download = `reports_export_${new Date().toISOString().slice(0, 10)}.csv`;
         a.click();
         window.URL.revokeObjectURL(url);
-        if (exportPreviewRows.length === 0) {
+        if (exportData?.totalRows === 0) {
           addNotification({ type: 'warning', message: '已导出空CSV文件（仅表头），请调整筛选条件' });
         } else {
           addNotification({ type: 'success', message: '数据导出成功' });
@@ -756,10 +745,10 @@ export default function ReportsPage() {
 
             <div className="flex items-center justify-between pt-6 border-t border-soil-100">
               <div className="text-sm text-soil-500">
-                {exportPreviewRows.length === 0 ? (
+                {(exportData?.totalRows ?? 0) === 0 ? (
                   <>将导出 <span className="font-semibold text-soil-700">0</span> 条数据（仅表头）</>
                 ) : (
-                  <>将导出 <span className="font-semibold text-soil-700">{exportPreviewRows.length}</span> 条明细数据</>
+                  <>将导出 <span className="font-semibold text-soil-700">{exportData?.totalRows ?? 0}</span> 条明细数据</>
                 )}
               </div>
               <button
@@ -782,7 +771,12 @@ export default function ReportsPage() {
               <BarChart3 className="w-4 h-4 text-agri-600" />
               数据预览
             </h3>
-            {exportPreviewRows.length === 0 ? (
+            {exportDataLoading ? (
+              <div className="p-12 text-center text-soil-400 border border-dashed border-soil-200 rounded-lg">
+                <Loader2 className="w-10 h-10 text-soil-200 mx-auto mb-3 animate-spin" />
+                <p>正在加载数据...</p>
+              </div>
+            ) : (exportData?.totalRows === 0 || exportData?.rows.length === 0) ? (
               <div className="p-12 text-center text-soil-400 border border-dashed border-soil-200 rounded-lg">
                 <AlertCircle className="w-10 h-10 text-soil-200 mx-auto mb-3" />
                 <p>当前筛选条件下无匹配数据，请调整筛选条件后重试</p>
@@ -807,29 +801,27 @@ export default function ReportsPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {exportPreviewRows.slice(0, 10).map((row, idx) => (
+                      {exportData?.rows.map((row, idx) => (
                         <tr key={`${row.variety}-${row.stage}-${row.treatment}-${idx}`} className="border-t border-gray-100 hover:bg-agri-50/30 transition-colors">
                           <td className="table-cell">{row.variety}</td>
                           <td className="table-cell">{row.stage}</td>
                           <td className="table-cell">{row.treatment}</td>
-                          <td className="table-cell text-right">{formatNumber(row.lai, 2)}</td>
-                          <td className="table-cell text-right">{formatNumber(row.biomassGrain, 0)}</td>
-                          <td className="table-cell text-right">{formatNumber(row.biomassStem, 0)}</td>
+                          <td className="table-cell text-right">{formatNumber(row.lai, 3)}</td>
+                          <td className="table-cell text-right">{formatNumber(row.biomassGrain, 2)}</td>
+                          <td className="table-cell text-right">{formatNumber(row.biomassStem, 2)}</td>
                           <td className="table-cell text-right">{formatNumber(row.soilMoisture, 1)}</td>
                           <td className="table-cell text-right">{formatNumber(row.mineralN, 1)}</td>
                           <td className="table-cell text-right font-semibold text-amber-700">{formatNumber(row.yield, 0)}</td>
                           <td className="table-cell text-right">{formatNumber(row.wue, 2)}</td>
-                          <td className="table-cell text-right">{formatNumber(row.nue, 2)}</td>
+                          <td className="table-cell text-right">{formatNumber(row.nue, 3)}</td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
                 </div>
-                {exportPreviewRows.length > 10 && (
-                  <div className="text-center text-sm text-soil-400 mt-3">
-                    仅显示前 10 条，完整数据请导出后查看
-                  </div>
-                )}
+                <div className="text-center text-sm text-soil-400 mt-3">
+                  共显示 {exportData?.rows.length ?? 0} 条明细数据
+                </div>
               </>
             )}
           </div>
